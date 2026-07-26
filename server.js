@@ -59,6 +59,8 @@ const { scheduleMonthlyFinanceEmails } = require("./jobs/monthlyFinanceJob");
 scheduleMonthlyFinanceEmails();
 
 // ==================== ERROR HANDLER ====================
+
+
 app.use((err, req, res, next) => {
   console.error("❌ Global error:", err.message);
   res.status(500).json({ message: err.message || "Server error" });
