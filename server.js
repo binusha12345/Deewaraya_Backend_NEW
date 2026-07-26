@@ -14,7 +14,7 @@ const cors = require("cors");
 const path = require("path");
 const connectDB = require("./config/db");
 const translateRoutes = require("./routes/translateRoutes");
-
+const contactRoutes = require('./routes/contact');
 const app = express();
 
 // ==================== CONNECT DATABASE ====================
@@ -45,8 +45,9 @@ app.use("/api/boats", require("./routes/boatRoutes"));
 app.use("/api/weather", require("./routes/weatherRoutes"));
 app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/tracking", require("./routes/trackingRoutes"));
-app.use("/api/finance", require("./routes/financeRoutes"));  // ✅ Only here, ONCE
+app.use("/api/finance", require("./routes/financeRoutes"));  
 app.use("/api/translate", translateRoutes);
+app.use('/api/contact', contactRoutes);
 
 // Root route
 app.get("/", (req, res) => {
