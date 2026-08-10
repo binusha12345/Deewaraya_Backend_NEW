@@ -1,5 +1,4 @@
 // server.js
-
 require("dotenv").config();
 
 console.log("✅ Environment Check:");
@@ -21,12 +20,13 @@ const app = express();
 connectDB();
 
 // ==================== MIDDLEWARE ====================
-app.use(
-  cors({
-    origin: true,
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://192.168.41.199:5173',  
+  ],
+  credentials: true,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
