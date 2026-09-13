@@ -19,14 +19,13 @@ const app = express();
 // ==================== CONNECT DATABASE ====================
 connectDB();
 
-// ==================== MIDDLEWARE ====================
+// 2. Enable CORS
 app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://192.168.41.199:5173',  
-  ],
-  credentials: true,
+  origin: "*", // This allows ALL devices and IPs to connect
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -40,6 +39,9 @@ app.use((req, res, next) => {
 });
 
 // ==================== ROUTES ====================
+app.use("/api/vessel", require("./routes/boatRoutes"));
+app.use("/api/vessels", require("./routes/boatRoutes"));
+
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/boats", require("./routes/boatRoutes"));
 app.use("/api/weather", require("./routes/weatherRoutes"));
@@ -68,6 +70,6 @@ app.use((err, req, res, next) => {
 
 // ==================== START SERVER ====================
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://10.17.58.85:${PORT}`);
 });
