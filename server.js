@@ -8,8 +8,12 @@ console.log("Email Host:", process.env.EMAIL_HOST);
 console.log("Email User:", process.env.EMAIL_USER);
 console.log("Email From:", process.env.EMAIL_FROM);
 
+const fs = require('fs');
+const https = require('https');
+const { updateAllMarketPrices } = require('./services/marketService');
+// Import your service from services folder
+const { scrapeCFHCFishPrices } = require('./services/cfhcScraperService');
 const express = require("express");
-const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const User = require("./models/User");
@@ -19,9 +23,18 @@ const connectDB = require("./config/db");
 const translateRoutes = require("./routes/translateRoutes");
 const contactRoutes = require('./routes/contact');
 const app = express();
-const server = http.createServer(app);
+const tlsDirectory = path.join(__dirname, '..', 'client');
+const server = https.createServer({
+  key: fs.readFileSync(path.join(tlsDirectory, '10.57.89.85+2-key.pem')),
+  cert: fs.readFileSync(path.join(tlsDirectory, '10.57.89.85+2.pem')),
+}, app);
+const allowedOrigins = [
+  'https://localhost:5173',
+  'https://127.0.0.1:5173',
+  'https://10.57.89.85:5173',
+];
 const io = new Server(server, {
-  cors: { origin: process.env.CLIENT_ORIGIN || "*", methods: ["GET", "POST"] },
+  cors: { origin: allowedOrigins, methods: ["GET", "POST"] },
 });
 app.set("io", io);
 
@@ -45,12 +58,16 @@ io.on("connection", (socket) => {
 
 // ==================== CONNECT DATABASE ====================
 connectDB();
+// Run scraper on server startup
+scrapeCFHCFishPrices();
+
+// Fetch live prices on backend startup
+updateAllMarketPrices();
 
 // 2. Enable CORS
 app.use(cors({
-  origin: "*", // This allows ALL devices and IPs to connect
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  credentials: true
+  origin: allowedOrigins,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 }));
 
 app.use(express.json());
@@ -89,9 +106,29 @@ app.get("/", (req, res) => {
 const { scheduleMonthlyFinanceEmails } = require("./jobs/monthlyFinanceJob");
 scheduleMonthlyFinanceEmails();
 
-// ==================== ERROR HANDLER ====================
+// API Endpoint for React frontend
+app.get('/api/market-prices', (req, res) => {
+  try {
+    const dataPath = path.join(__dirname, 'market-data.json');
+    const rawData = fs.readFileSync(dataPath);
+    res.status(200).json({ success: true, data: JSON.parse(rawData) });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Error reading market data" });
+  }
+});
 
+// API Route to read the scraped data for your frontend
+app.get('/api/fish-prices', (req, res) => {
+  try {
+    const dataPath = path.join(__dirname, 'cfhc-fish-data.json');
+    const rawData = fs.readFileSync(dataPath);
+    res.json(JSON.parse(rawData));
+  } catch (error) {
+    res.status(500).json({ message: "Could not read price data" });
+  }
+});
 
+// ==================== ERROR HANDLER =====================
 app.use((err, req, res, next) => {
   console.error("❌ Global error:", err.message);
   res.status(500).json({ message: err.message || "Server error" });
@@ -100,5 +137,5 @@ app.use((err, req, res, next) => {
 // ==================== START SERVER ====================
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://10.57.89.85:${PORT}`);
+  console.log(`Secure API running on https://localhost:${PORT} and https://10.57.89.85:${PORT}`);
 });

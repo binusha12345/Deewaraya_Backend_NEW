@@ -1,0 +1,37 @@
+{
+  "source": "System estimate (CFHC feed unavailable)",
+  "last_updated": "9/26/2026, 8:00:06 PM",
+  "currency": "LKR",
+  "fish_prices": [
+    {
+      "name": "Yellowfin Tuna (කෙලවල්ලා)",
+      "price_lkr": 1750,
+      "unit": "kg"
+    },
+    {
+      "name": "Skipjack Tuna (බලයා)",
+      "price_lkr": 1050,
+      "unit": "kg"
+    },
+    {
+      "name": "Sailfish (තලපත)",
+      "price_lkr": 1900,
+      "unit": "kg"
+    },
+    {
+      "name": "Trevally (පරවා)",
+      "price_lkr": 1500,
+      "unit": "kg"
+    },
+    {
+      "name": "Goldstripe Sardinella (සාලයා)",
+      "price_lkr": 450,
+      "unit": "kg"
+    },
+    {
+      "name": "Seer Fish (තෝරා)",
+      "price_lkr": 2400,
+      "unit": "kg"
+    }
+  ]
+}

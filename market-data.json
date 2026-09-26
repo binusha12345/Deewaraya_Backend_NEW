@@ -1,0 +1,48 @@
+{
+  "last_updated": "9/26/2026, 8:00:06 PM",
+  "currency": "LKR",
+  "fuel": {
+    "auto_diesel": 382,
+    "super_diesel": 478,
+    "kerosene": 285
+  },
+  "fuel_effective_from": {
+    "auto_diesel": "29-06-2026 12.00 Midnight",
+    "kerosene": "30-05-2026 12.00 Midnight",
+    "super_diesel": "30-05-2026 12.00 Midnight"
+  },
+  "fuel_source": "https://ceypetco.gov.lk/marketing-sales/",
+  "fish": [
+    {
+      "name": "Yellowfin Tuna (කෙලවල්ලා)",
+      "price": 1750,
+      "unit": "kg"
+    },
+    {
+      "name": "Skipjack Tuna (බලයා)",
+      "price": 1050,
+      "unit": "kg"
+    },
+    {
+      "name": "Sailfish (තලපත)",
+      "price": 1900,
+      "unit": "kg"
+    },
+    {
+      "name": "Trevally (පරවා)",
+      "price": 1500,
+      "unit": "kg"
+    },
+    {
+      "name": "Goldstripe Sardinella (සාලයා)",
+      "price": 450,
+      "unit": "kg"
+    },
+    {
+      "name": "Seer Fish (තෝරා)",
+      "price": 2400,
+      "unit": "kg"
+    }
+  ],
+  "fish_source": "System estimate (CFHC has no published price table)"
+}
