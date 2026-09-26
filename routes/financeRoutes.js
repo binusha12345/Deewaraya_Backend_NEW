@@ -4,6 +4,7 @@ const express = require("express");
 const router = express.Router();
 const financeController = require("../controllers/financeController");
 const { protect } = require("../middleware/authMiddleware");
+const { sendMonthlyReportWhatsApp } = require("../controllers/financeController");
 
 // ✅ Debug - Check if controller functions exist
 console.log("Finance controller loaded:", {
@@ -29,6 +30,7 @@ router.get("/daily", protect, financeController.getDailyEntries);
 router.get("/daily/:id", protect, financeController.getDailyEntryById);
 router.put("/daily/:id", protect, financeController.updateDailyEntry);
 router.delete("/daily/:id", protect, financeController.deleteDailyEntry);
+router.post("/monthly/send-whatsapp", protect, sendMonthlyReportWhatsApp);
 
 // TEMPORARY - Delete all your entries for testing
 router.delete("/reset", protect, async (req, res) => {

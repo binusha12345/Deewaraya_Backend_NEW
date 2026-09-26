@@ -50,6 +50,7 @@ app.use("/api/tracking", require("./routes/trackingRoutes"));
 app.use("/api/finance", require("./routes/financeRoutes"));  
 app.use("/api/translate", translateRoutes);
 app.use('/api/contact', contactRoutes);
+app.use("/reports", express.static(path.join(__dirname, "public/reports")));
 
 // Root route
 app.get("/", (req, res) => {
@@ -71,5 +72,5 @@ app.use((err, req, res, next) => {
 // ==================== START SERVER ====================
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://10.17.58.85:${PORT}`);
+    console.log(`Server running on http://10.57.89.85:${PORT}`);
 });

@@ -1,9 +1,37 @@
-// server/controllers/financeController.js
-
 const DailyFinance = require("../models/Finance");
 const PDFDocument = require("pdfkit");
 const User = require("../models/User");
 const sendEmail = require("../utils/sendEmail"); // ✅ Use Brevo utility
+// Whatsapp Apoi
+const { sendWhatsAppPDF, sendWhatsAppText } = require("../utils/whatsappService");
+const path = require("path");
+const fs = require("fs");
+
+const normalizeWhatsappNumber = (value) =>
+  String(value || "").replace(/[\s\-()]/g, "");
+
+const getPublicReportBaseUrl = () => {
+  const configuredUrl = process.env.PUBLIC_BASE_URL?.trim();
+
+  if (!configuredUrl) {
+    throw new Error(
+      "WhatsApp PDF delivery is not configured. Set PUBLIC_BASE_URL to the public HTTPS URL of the server."
+    );
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(configuredUrl);
+  } catch {
+    throw new Error("PUBLIC_BASE_URL must be a valid public HTTPS URL.");
+  }
+
+  if (parsedUrl.protocol !== "https:") {
+    throw new Error("PUBLIC_BASE_URL must use HTTPS so Twilio can download the PDF.");
+  }
+
+  return parsedUrl.toString().replace(/\/$/, "");
+};
 
 // ==================== DAILY ENTRIES ====================
 exports.createDailyEntry = async (req, res) => {
@@ -463,6 +491,173 @@ exports.sendMonthlyPDFEmail = async (req, res) => {
   }
 };
 
+// ==================== PDF WHATSAPP ====================
+
+exports.sendMonthlyReportWhatsApp = async (req, res) => {
+  try {
+    console.log("📱 STEP 1: Starting sendMonthlyReportWhatsApp");
+    const { year, month, whatsappNumber } = req.body;
+    const normalizedWhatsappNumber = normalizeWhatsappNumber(whatsappNumber);
+
+    // --- Validate WhatsApp number ---
+    if (!normalizedWhatsappNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "WhatsApp number is required",
+      });
+    }
+
+    const phoneRegex = /^\+[1-9]\d{7,14}$/;
+    if (!phoneRegex.test(normalizedWhatsappNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format. Use +[country code][number], e.g. +94771234567",
+      });
+    }
+
+    let publicReportBaseUrl;
+    try {
+      publicReportBaseUrl = getPublicReportBaseUrl();
+    } catch (error) {
+      return res.status(503).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    // --- Fetch user ---
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // --- Fetch monthly data ---
+    const startDate = new Date(year, month - 1, 1);
+    const endDate = new Date(year, month, 0, 23, 59, 59);
+
+    const entries = await DailyFinance.find({
+      ownerId: req.user._id,
+      date: { $gte: startDate, $lte: endDate },
+    }).sort({ date: 1 });
+
+    if (entries.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No data found for this month",
+      });
+    }
+
+    // --- Calculate summary (same logic as email) ---
+    const summary = entries.reduce(
+      (acc, entry) => {
+        acc.totalIncome += entry.totalIncome;
+        acc.totalExpenses += entry.totalExpenses;
+        acc.totalNetProfit += entry.netProfit;
+        acc.workingDays += 1;
+
+        entry.expenses.forEach((exp) => {
+          acc.expenseBreakdown[exp.category] =
+            (acc.expenseBreakdown[exp.category] || 0) + exp.amount;
+        });
+
+        entry.fishEntries.forEach((fish) => {
+          if (!acc.fishBreakdown[fish.fishName]) {
+            acc.fishBreakdown[fish.fishName] = { quantity: 0, income: 0 };
+          }
+          acc.fishBreakdown[fish.fishName].quantity += fish.quantity;
+          acc.fishBreakdown[fish.fishName].income += fish.totalPrice;
+        });
+
+        return acc;
+      },
+      {
+        totalIncome: 0,
+        totalExpenses: 0,
+        totalNetProfit: 0,
+        workingDays: 0,
+        expenseBreakdown: {},
+        fishBreakdown: {},
+      }
+    );
+
+    const recommendations = generateRecommendations(summary);
+    const monthName = new Date(year, month - 1).toLocaleString("default", {
+      month: "long",
+    });
+
+    console.log("📱 STEP 2: Generating PDF for WhatsApp");
+
+    // --- Generate PDF (reuse existing function) ---
+    const pdfBuffer = await generatePDF(
+      summary,
+      recommendations,
+      monthName,
+      year,
+      entries,
+      user.name || "Boat Owner"
+    );
+
+    console.log("📱 STEP 3: PDF generated, size:", pdfBuffer.length, "bytes");
+
+    // --- Save PDF temporarily to public folder ---
+    const reportsDir = path.join(__dirname, "../public/reports");
+    if (!fs.existsSync(reportsDir)) {
+      fs.mkdirSync(reportsDir, { recursive: true });
+    }
+
+    const fileName = `monthly-report-${year}-${month}-${Date.now()}.pdf`;
+    const filePath = path.join(reportsDir, fileName);
+    fs.writeFileSync(filePath, pdfBuffer);
+
+    console.log("📱 STEP 4: PDF saved to:", filePath);
+
+    // --- Build public URL for Twilio to fetch ---
+    const pdfUrl = `${publicReportBaseUrl}/reports/${fileName}`;
+
+    console.log("📱 STEP 5: PDF public URL:", pdfUrl);
+
+    // --- Compose WhatsApp message ---
+    const profitEmoji = summary.totalNetProfit >= 0 ? "📈" : "📉";
+    const message =
+      `*Deewaraya - Monthly Finance Report*\n\n` +
+      `📅 Period: ${monthName} ${year}\n` +
+      `💰 Total Income: Rs. ${summary.totalIncome.toLocaleString()}\n` +
+      `💸 Total Expenses: Rs. ${summary.totalExpenses.toLocaleString()}\n` +
+      `${profitEmoji} Net Profit: Rs. ${summary.totalNetProfit.toLocaleString()}\n` +
+      `🚤 Working Days: ${summary.workingDays}\n` +
+      `📊 Profit Margin: ${summary.totalIncome > 0 ? ((summary.totalNetProfit / summary.totalIncome) * 100).toFixed(1) : 0}%\n\n` +
+      `The detailed PDF report is attached below.`;
+
+    // --- Send via Twilio WhatsApp ---
+    console.log("📱 STEP 6: Sending WhatsApp to:", normalizedWhatsappNumber);
+    await sendWhatsAppPDF(normalizedWhatsappNumber, pdfUrl, message);
+
+    console.log("✅ STEP 7: WhatsApp sent successfully!");
+
+    // --- Cleanup: delete temp PDF after 10 minutes ---
+    setTimeout(() => {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log("🗑️ Temp PDF deleted:", fileName);
+      }
+    }, 10 * 60 * 1000);
+
+    res.status(200).json({
+      success: true,
+      message: "Monthly report sent to WhatsApp successfully!",
+    });
+  } catch (error) {
+    console.error("❌ Send WhatsApp error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to send WhatsApp report",
+    });
+  }
+};
+
 // ==================== DASHBOARD STATS ====================
 
 exports.getDashboardStats = async (req, res) => {
@@ -590,7 +785,7 @@ function generateRecommendations(data) {
   return recommendations;
 }
 
-// ✅ PDF Generator function (EMOJIS REMOVED - prevents PDFKit crashes)
+// PDF Generator
 async function generatePDF(
   summary,
   recommendations,
@@ -600,47 +795,39 @@ async function generatePDF(
   ownerName
 ) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 50 });
+    const doc = new PDFDocument({ size: "A4", margin: 44, bufferPages: true });
     const buffers = [];
+    const pageWidth = doc.page.width;
+    const pageHeight = doc.page.height;
+    const contentWidth = pageWidth - 88;
+    const colors = {
+      navy: "#1E3A8A",
+      blue: "#2563EB",
+      teal: "#0891B2",
+      green: "#10B981",
+      red: "#EF4444",
+      ink: "#1E293B",
+      muted: "#64748B",
+      line: "#CBD5E1",
+      paleBlue: "#EFF6FF",
+      paleGreen: "#ECFDF5",
+      paleRed: "#FEF2F2",
+      paleGold: "#ECFEFF",
+      white: "#FFFFFF",
+    };
+    const money = (value) => `Rs. ${Math.round(value || 0).toLocaleString()}`;
+    const percentage = (value, total) =>
+      total > 0 ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
+    const profitColor = summary.totalNetProfit >= 0 ? colors.green : colors.red;
+    const margin =
+      summary.totalIncome > 0
+        ? (summary.totalNetProfit / summary.totalIncome) * 100
+        : 0;
+    let pageNumber = 1;
 
     doc.on("data", (chunk) => buffers.push(chunk));
     doc.on("end", () => resolve(Buffer.concat(buffers)));
     doc.on("error", reject);
-
-    // Header
-    doc.fontSize(24).fillColor("#1e3a5f").text("Deewaraya", { align: "center" });
-    doc.fontSize(14).fillColor("#666").text("Monthly Finance Report", { align: "center" });
-    doc.fontSize(12).text(`${monthName} ${year}`, { align: "center" });
-    doc.moveDown(0.5);
-    doc.fontSize(10).text(`Owner: ${ownerName}`, { align: "center" });
-    doc.text(`Generated: ${new Date().toLocaleDateString()}`, { align: "center" });
-
-    // Divider
-    doc.moveDown();
-    doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke("#1e3a5f");
-    doc.moveDown();
-
-    // Summary Section
-    doc.fontSize(16).fillColor("#1e3a5f").text("Monthly Summary");
-    doc.moveDown(0.5);
-
-    const profitColor = summary.totalNetProfit >= 0 ? "#27ae60" : "#e74c3c";
-
-    doc.fontSize(11).fillColor("#333");
-    doc.text(`Total Income:         Rs. ${summary.totalIncome.toLocaleString()}`);
-    doc.text(`Total Expenses:       Rs. ${summary.totalExpenses.toLocaleString()}`);
-    doc.fillColor(profitColor);
-    doc.text(`Net Profit:           Rs. ${summary.totalNetProfit.toLocaleString()}`);
-    doc.fillColor("#333");
-    doc.text(`Working Days:         ${summary.workingDays}`);
-    doc.text(`Avg Daily Income:     Rs. ${Math.round(summary.totalIncome / (summary.workingDays || 1)).toLocaleString()}`);
-    doc.text(`Profit Margin:        ${summary.totalIncome > 0 ? ((summary.totalNetProfit / summary.totalIncome) * 100).toFixed(1) : 0}%`);
-
-    // Expense Breakdown
-    doc.moveDown();
-    doc.fontSize(16).fillColor("#1e3a5f").text("Expense Breakdown");
-    doc.moveDown(0.5);
-    doc.fontSize(11).fillColor("#333");
 
     const categoryLabels = {
       fuel: "Fuel",
@@ -651,65 +838,172 @@ async function generatePDF(
       other: "Other",
     };
 
-    Object.entries(summary.expenseBreakdown).forEach(([category, amount]) => {
-      const label = categoryLabels[category] || category;
-      const percentage = ((amount / summary.totalExpenses) * 100).toFixed(1);
-      doc.text(`${label}: Rs. ${amount.toLocaleString()} (${percentage}%)`);
-    });
+    const drawFooter = () => {
+      doc.save();
+      doc.strokeColor(colors.line).lineWidth(0.7)
+        .moveTo(44, pageHeight - 76).lineTo(pageWidth - 44, pageHeight - 76).stroke();
+      doc.font("Helvetica").fontSize(8).fillColor(colors.muted)
+        .text("Deewaraya Finance | Confidential owner report", 44, pageHeight - 65, { width: 330 });
+      doc.text(`Page ${pageNumber}`, pageWidth - 100, pageHeight - 65, { width: 56, align: "right" });
+      doc.restore();
+    };
 
-    // Fish Breakdown
-    doc.moveDown();
-    doc.fontSize(16).fillColor("#1e3a5f").text("Fish Income Breakdown");
-    doc.moveDown(0.5);
-    doc.fontSize(11).fillColor("#333");
+    const drawPageHeader = (sectionTitle) => {
+      doc.rect(0, 0, pageWidth, 78).fill(colors.navy);
+      doc.font("Helvetica-Bold").fontSize(22).fillColor(colors.white)
+        .text("DEEWARAYA", 44, 22, { characterSpacing: 1.2 });
+      doc.font("Helvetica").fontSize(9).fillColor("#B9D5E5")
+        .text("MARITIME FINANCE MANAGEMENT", 45, 49, { characterSpacing: 1.1 });
+      doc.font("Helvetica-Bold").fontSize(11).fillColor(colors.white)
+        .text(sectionTitle.toUpperCase(), pageWidth - 220, 32, { width: 176, align: "right" });
+      doc.y = 104;
+    };
 
-    Object.entries(summary.fishBreakdown)
-      .sort((a, b) => b[1].income - a[1].income)
-      .forEach(([name, data]) => {
-        doc.text(
-          `${name}: ${data.quantity}kg - Rs. ${data.income.toLocaleString()}`
-        );
+    const sectionTitle = (title, subtitle) => {
+      doc.font("Helvetica-Bold").fontSize(16).fillColor(colors.navy).text(title);
+      if (subtitle) {
+        doc.font("Helvetica").fontSize(9).fillColor(colors.muted).text(subtitle, { continued: false });
+      }
+      doc.moveDown(0.65);
+    };
+
+    const metricCard = (x, y, width, label, value, accent, fill) => {
+      doc.roundedRect(x, y, width, 73, 8).fillAndStroke(fill, colors.line);
+      doc.rect(x, y, 5, 73).fill(accent);
+      doc.font("Helvetica").fontSize(9).fillColor(colors.muted).text(label.toUpperCase(), x + 16, y + 14, { width: width - 25 });
+      doc.font("Helvetica-Bold").fontSize(15).fillColor(colors.ink).text(value, x + 16, y + 35, { width: width - 25 });
+    };
+
+    const drawBreakdown = (title, items, total, itemValue) => {
+      sectionTitle(title, "A clear view of where the month's money came from or went.");
+      if (items.length === 0) {
+        doc.font("Helvetica").fontSize(10).fillColor(colors.muted).text("No records available for this period.");
+        return;
+      }
+      const barWidth = 188;
+      items.forEach(([label, value], index) => {
+        const y = doc.y;
+        const amount = itemValue(value);
+        const share = total > 0 ? amount / total : 0;
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(colors.ink).text(label, 44, y, { width: 145 });
+        doc.font("Helvetica").fontSize(9).fillColor(colors.muted).text(`${money(amount)}  |  ${percentage(amount, total)}`, 280, y, { width: 105, align: "right" });
+        doc.roundedRect(44, y + 17, barWidth, 7, 3).fill("#E7EEF3");
+        doc.roundedRect(44, y + 17, Math.max(share * barWidth, share > 0 ? 4 : 0), 7, 3).fill(index % 2 ? colors.teal : colors.blue);
+        doc.y = y + 36;
       });
+    };
 
-    // Daily Entries Table
-    if (entries.length > 0) {
-      doc.addPage();
-      doc.fontSize(16).fillColor("#1e3a5f").text("Daily Entries");
-      doc.moveDown(0.5);
-      doc.fontSize(9).fillColor("#333");
+    drawPageHeader("Monthly Finance Report");
+    doc.font("Helvetica-Bold").fontSize(25).fillColor(colors.navy).text(`${monthName} ${year}`);
+    doc.font("Helvetica").fontSize(10).fillColor(colors.muted).text(`Prepared for ${ownerName}  |  Generated ${new Date().toLocaleDateString()}`);
+    doc.moveDown(1.2);
 
-      doc.font("Helvetica-Bold");
-      doc.text("Date          Income        Expenses      Profit", { continued: false });
-      doc.font("Helvetica");
-      doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke("#ccc");
+    sectionTitle("Executive Summary", "Your financial performance at a glance.");
+    const cardGap = 10;
+    const cardWidth = (contentWidth - cardGap) / 2;
+    const firstRowY = doc.y;
+    metricCard(44, firstRowY, cardWidth, "Total income", money(summary.totalIncome), colors.blue, colors.paleBlue);
+    metricCard(44 + cardWidth + cardGap, firstRowY, cardWidth, "Total expenses", money(summary.totalExpenses), colors.red, colors.paleRed);
+    metricCard(44, firstRowY + 84, cardWidth, "Net profit", money(summary.totalNetProfit), profitColor, summary.totalNetProfit >= 0 ? colors.paleGreen : colors.paleRed);
+    metricCard(44 + cardWidth + cardGap, firstRowY + 84, cardWidth, "Profit margin", `${margin.toFixed(1)}%`, colors.teal, colors.paleGold);
+    doc.y = firstRowY + 184;
 
-      entries.forEach((entry) => {
-        const dateStr = new Date(entry.date).toLocaleDateString();
-        const profitStr = entry.netProfit >= 0 ? `+${entry.netProfit.toLocaleString()}` : entry.netProfit.toLocaleString();
-        doc.text(
-          `${dateStr}      Rs.${entry.totalIncome.toLocaleString().padEnd(10)}  Rs.${entry.totalExpenses.toLocaleString().padEnd(10)}  Rs.${profitStr}`
-        );
+    const detailY = doc.y;
+    doc.roundedRect(44, detailY, contentWidth, 59, 8).fillAndStroke("#F6F9FB", colors.line);
+    doc.font("Helvetica-Bold").fontSize(9).fillColor(colors.navy).text("OPERATING SNAPSHOT", 58, detailY + 14);
+    doc.font("Helvetica").fontSize(10).fillColor(colors.ink)
+      .text(`Working days: ${summary.workingDays}`, 58, detailY + 33)
+      .text(`Average daily income: ${money(summary.totalIncome / (summary.workingDays || 1))}`, 190, detailY + 33)
+      .text(`Average daily expense: ${money(summary.totalExpenses / (summary.workingDays || 1))}`, 386, detailY + 33);
+    doc.y = detailY + 86;
+
+    const expenseItems = Object.entries(summary.expenseBreakdown || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([category, amount]) => [categoryLabels[category] || category, amount]);
+    drawBreakdown("Expense Breakdown", expenseItems, summary.totalExpenses, (value) => value);
+
+    doc.addPage();
+    pageNumber += 1;
+    drawPageHeader("Income Analysis");
+    const fishItems = Object.entries(summary.fishBreakdown || {})
+      .sort((a, b) => b[1].income - a[1].income);
+    sectionTitle("Income by Catch", "Revenue contribution from each recorded fish category.");
+    if (fishItems.length === 0) {
+      doc.font("Helvetica").fontSize(10).fillColor(colors.muted).text("No catch records available for this period.");
+    } else {
+      const tableTop = doc.y;
+      doc.roundedRect(44, tableTop, contentWidth, 29, 5).fill(colors.navy);
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(colors.white)
+        .text("FISH CATEGORY", 57, tableTop + 10)
+        .text("QUANTITY", 280, tableTop + 10, { width: 75, align: "right" })
+        .text("REVENUE", 420, tableTop + 10, { width: 95, align: "right" });
+      doc.y = tableTop + 38;
+      fishItems.slice(0, 4).forEach(([name, data], index) => {
+        const y = doc.y;
+        if (index % 2 === 0) doc.rect(44, y - 5, contentWidth, 29).fill("#F5F8FA");
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(colors.ink).text(name, 57, y + 3, { width: 190 });
+        doc.font("Helvetica").text(`${data.quantity} ${data.unit || "kg"}`, 280, y + 3, { width: 75, align: "right" });
+        doc.font("Helvetica-Bold").fillColor(colors.blue).text(money(data.income), 420, y + 3, { width: 95, align: "right" });
+        doc.y = y + 29;
       });
+      if (fishItems.length > 4) {
+        doc.font("Helvetica-Oblique").fontSize(8).fillColor(colors.muted)
+          .text(`Showing top 4 of ${fishItems.length} fish categories.`, 57, doc.y + 2);
+        doc.y += 18;
+      }
     }
 
-    // Recommendations
-    doc.addPage();
-    doc.fontSize(16).fillColor("#1e3a5f").text("Recommendations");
     doc.moveDown(0.5);
-    doc.fontSize(11).fillColor("#333");
+    sectionTitle("Recommendations", "Practical observations based on this month's records.");
+    if (recommendations.length === 0) {
+      doc.font("Helvetica").fontSize(9).fillColor(colors.muted).text("No additional recommendations for this period.");
+      doc.moveDown(0.8);
+    } else {
+      recommendations.slice(0, 1).forEach((rec) => {
+        const accent = rec.type === "warning" ? colors.red : rec.type === "success" ? colors.green : colors.blue;
+        const fill = rec.type === "warning" ? colors.paleRed : rec.type === "success" ? colors.paleGreen : colors.paleBlue;
+        const y = doc.y;
+        doc.roundedRect(44, y, contentWidth, 46, 6).fillAndStroke(fill, colors.line);
+        doc.rect(44, y, 4, 46).fill(accent);
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(accent).text(rec.title, 58, y + 9);
+        doc.font("Helvetica").fontSize(8).fillColor(colors.ink).text(rec.message, 58, y + 24, { width: contentWidth - 72, height: 16, ellipsis: true });
+        doc.y = y + 55;
+      });
+      if (recommendations.length > 1) {
+        doc.font("Helvetica-Oblique").fontSize(8).fillColor(colors.muted).text(`Showing 2 of ${recommendations.length} recommendations.`);
+      }
+    }
 
-    recommendations.forEach((rec, index) => {
-      const icon =
-        rec.type === "warning" ? "[!]" : rec.type === "success" ? "[OK]" : "[i]";
-      doc.font("Helvetica-Bold").text(`${icon} ${rec.title}`);
-      doc.font("Helvetica").text(rec.message);
-      doc.moveDown(0.5);
-    });
+    doc.moveDown(0.3);
+    if (entries.length > 0) {
+      sectionTitle("Daily Performance", "Income, expenses and profit recorded for each working day.");
+      const tableTop = doc.y;
+      doc.roundedRect(44, tableTop, contentWidth, 29, 5).fill(colors.navy);
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(colors.white)
+        .text("DATE", 57, tableTop + 10)
+        .text("INCOME", 190, tableTop + 10, { width: 90, align: "right" })
+        .text("EXPENSES", 300, tableTop + 10, { width: 90, align: "right" })
+        .text("NET PROFIT", 420, tableTop + 10, { width: 95, align: "right" });
+      doc.y = tableTop + 38;
+      const visibleEntries = entries.slice(0, 5);
+      visibleEntries.forEach((entry, index) => {
+        const y = doc.y;
+        if (index % 2 === 0) doc.rect(44, y - 5, contentWidth, 25).fill("#F5F8FA");
+        doc.font("Helvetica").fontSize(8.5).fillColor(colors.ink)
+          .text(new Date(entry.date).toLocaleDateString(), 57, y + 3)
+          .text(money(entry.totalIncome), 190, y + 3, { width: 90, align: "right" })
+          .text(money(entry.totalExpenses), 300, y + 3, { width: 90, align: "right" });
+        doc.font("Helvetica-Bold").fillColor(entry.netProfit >= 0 ? colors.green : colors.red)
+          .text(money(entry.netProfit), 420, y + 3, { width: 95, align: "right" });
+        doc.y = y + 25;
+      });
+      if (entries.length > visibleEntries.length) {
+        doc.font("Helvetica-Oblique").fontSize(8).fillColor(colors.muted)
+          .text(`Showing 5 of ${entries.length} daily entries in this two-page report.`);
+      }
+    }
 
-    // Footer
-    doc.moveDown(2);
-    doc.fontSize(9).fillColor("#999").text("This report is auto-generated by Deewaraya Finance System.", { align: "center" });
-    doc.text("For any queries, contact support@deewaraya.com", { align: "center" });
+    drawFooter();
 
     doc.end();
   });
