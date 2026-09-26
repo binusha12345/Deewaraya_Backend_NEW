@@ -7,6 +7,11 @@ const boatSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    connectionStatus: {
+      type: String,
+      enum: ["good", "medium", "poor", "offline"],
+      default: "good",
+    },
     boatName: {
       type: String,
       required: true,

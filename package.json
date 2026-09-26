@@ -28,6 +28,7 @@
     "parser": "^0.1.4",
     "pdfkit": "^0.19.1",
     "qrcode": "^1.5.4",
+    "socket.io": "^4.8.4",
     "twilio": "^6.1.1"
   },
   "devDependencies": {
