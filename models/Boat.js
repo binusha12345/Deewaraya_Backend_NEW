@@ -7,10 +7,19 @@ const boatSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    driver: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
     connectionStatus: {
       type: String,
       enum: ["good", "medium", "poor", "offline"],
       default: "good",
+    },
+    connectionCheckedAt: {
+      type: Date,
+      default: null,
     },
     boatName: {
       type: String,
