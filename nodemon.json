@@ -1,0 +1,12 @@
+{
+  "watch": ["*"],
+  "ext": "js,json",
+  "ignore": [
+    ".wwebjs_auth/*",
+    ".wwebjs_cache/*",
+    "temp/*",
+    "public/*",
+    "market-data.json",
+    "cfhc-fish-data.json"
+  ]
+}
