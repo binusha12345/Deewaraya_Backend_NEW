@@ -30,3 +30,11 @@ Thumbs.db
 
 # Coverage
 coverage/
+
+#Whatsapp login user data
+baileys_auth_info/
+.wwebjs_auth/
+.wwebjs_cache/
+temp/
+node_modules/
+.env
