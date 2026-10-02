@@ -1,37 +1,16 @@
 const DailyFinance = require("../models/Finance");
 const PDFDocument = require("pdfkit");
 const User = require("../models/User");
-const sendEmail = require("../utils/sendEmail"); // ✅ Use Brevo utility
-// Whatsapp Apoi
-const { sendWhatsAppPDF, sendWhatsAppText } = require("../utils/whatsappService");
-const path = require("path");
-const fs = require("fs");
+const sendEmail = require("../utils/sendEmail"); // ✅ Brevo utility
+// ✅ WhatsApp - whatsapp-web.js version
+const {
+  sendWhatsAppPDF,
+  sendWhatsAppText,
+  getWhatsAppStatus,
+} = require("../services/whatsappService");
 
 const normalizeWhatsappNumber = (value) =>
   String(value || "").replace(/[\s\-()]/g, "");
-
-const getPublicReportBaseUrl = () => {
-  const configuredUrl = process.env.PUBLIC_BASE_URL?.trim();
-
-  if (!configuredUrl) {
-    throw new Error(
-      "WhatsApp PDF delivery is not configured. Set PUBLIC_BASE_URL to the public HTTPS URL of the server."
-    );
-  }
-
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(configuredUrl);
-  } catch {
-    throw new Error("PUBLIC_BASE_URL must be a valid public HTTPS URL.");
-  }
-
-  if (parsedUrl.protocol !== "https:") {
-    throw new Error("PUBLIC_BASE_URL must use HTTPS so Twilio can download the PDF.");
-  }
-
-  return parsedUrl.toString().replace(/\/$/, "");
-};
 
 // ==================== DAILY ENTRIES ====================
 exports.createDailyEntry = async (req, res) => {
@@ -374,7 +353,6 @@ exports.sendMonthlyPDFEmail = async (req, res) => {
     }
     console.log("📧 STEP 2: Sending to:", user.email);
 
-    // Get monthly data
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59);
 
@@ -389,7 +367,6 @@ exports.sendMonthlyPDFEmail = async (req, res) => {
         .json({ message: "No data found for this month" });
     }
 
-    // Calculate summary
     const summary = entries.reduce(
       (acc, entry) => {
         acc.totalIncome += entry.totalIncome;
@@ -427,7 +404,6 @@ exports.sendMonthlyPDFEmail = async (req, res) => {
       month: "long",
     });
 
-    // Generate PDF
     console.log("📧 STEP 3: Generating PDF");
     const pdfBuffer = await generatePDF(
       summary,
@@ -439,7 +415,6 @@ exports.sendMonthlyPDFEmail = async (req, res) => {
     );
     console.log("📧 STEP 4: PDF generated, size:", pdfBuffer.length, "bytes");
 
-    // HTML email content
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #1e3a5f;">📊 Monthly Finance Report</h2>
@@ -461,7 +436,6 @@ exports.sendMonthlyPDFEmail = async (req, res) => {
       </div>
     `;
 
-    // ✅ Send email using Brevo utility
     console.log("📧 STEP 5: Sending email via Brevo");
     await sendEmail({
       toEmail: user.email,
@@ -491,37 +465,48 @@ exports.sendMonthlyPDFEmail = async (req, res) => {
   }
 };
 
-// ==================== PDF WHATSAPP ====================
+// ==================== PDF WHATSAPP SENDING ====================
 
 exports.sendMonthlyReportWhatsApp = async (req, res) => {
   try {
     console.log("📱 STEP 1: Starting sendMonthlyReportWhatsApp");
     const { year, month, whatsappNumber } = req.body;
-    const normalizedWhatsappNumber = normalizeWhatsappNumber(whatsappNumber);
+    const normalizedNumber = normalizeWhatsappNumber(whatsappNumber);
 
     // --- Validate WhatsApp number ---
-    if (!normalizedWhatsappNumber) {
+    if (!normalizedNumber) {
       return res.status(400).json({
         success: false,
         message: "WhatsApp number is required",
       });
     }
 
-    const phoneRegex = /^\+[1-9]\d{7,14}$/;
-    if (!phoneRegex.test(normalizedWhatsappNumber)) {
+    // +94771234567 හෝ 0771234567 දෙකම accept කරනවා
+    const phoneRegex = /^(\+?[1-9]\d{7,14}|0\d{9})$/;
+    if (!phoneRegex.test(normalizedNumber)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid phone number format. Use +[country code][number], e.g. +94771234567",
+        message: "Invalid phone number. Use +94771234567 or 0771234567 format.",
       });
     }
 
-    let publicReportBaseUrl;
+    // --- Check WhatsApp Client Status Safely ---
+    let isConnected = false;
     try {
-      publicReportBaseUrl = getPublicReportBaseUrl();
-    } catch (error) {
+      if (typeof getWhatsAppStatus === "function") {
+        const status = getWhatsAppStatus();
+        isConnected = !!(status && status.connected);
+      }
+    } catch (stErr) {
+      console.warn("⚠️ WhatsApp Status Check warning:", stErr.message);
+      isConnected = false;
+    }
+
+    if (!isConnected) {
       return res.status(503).json({
         success: false,
-        message: error.message,
+        message:
+          "WhatsApp Client is not connected. Please scan the QR code from the server terminal.",
       });
     }
 
@@ -543,33 +528,37 @@ exports.sendMonthlyReportWhatsApp = async (req, res) => {
       date: { $gte: startDate, $lte: endDate },
     }).sort({ date: 1 });
 
-    if (entries.length === 0) {
+    if (!entries || entries.length === 0) {
       return res.status(404).json({
         success: false,
         message: "No data found for this month",
       });
     }
 
-    // --- Calculate summary (same logic as email) ---
+    // --- Calculate summary ---
     const summary = entries.reduce(
       (acc, entry) => {
-        acc.totalIncome += entry.totalIncome;
-        acc.totalExpenses += entry.totalExpenses;
-        acc.totalNetProfit += entry.netProfit;
+        acc.totalIncome += entry.totalIncome || 0;
+        acc.totalExpenses += entry.totalExpenses || 0;
+        acc.totalNetProfit += entry.netProfit || 0;
         acc.workingDays += 1;
 
-        entry.expenses.forEach((exp) => {
-          acc.expenseBreakdown[exp.category] =
-            (acc.expenseBreakdown[exp.category] || 0) + exp.amount;
-        });
+        if (entry.expenses && Array.isArray(entry.expenses)) {
+          entry.expenses.forEach((exp) => {
+            acc.expenseBreakdown[exp.category] =
+              (acc.expenseBreakdown[exp.category] || 0) + (exp.amount || 0);
+          });
+        }
 
-        entry.fishEntries.forEach((fish) => {
-          if (!acc.fishBreakdown[fish.fishName]) {
-            acc.fishBreakdown[fish.fishName] = { quantity: 0, income: 0 };
-          }
-          acc.fishBreakdown[fish.fishName].quantity += fish.quantity;
-          acc.fishBreakdown[fish.fishName].income += fish.totalPrice;
-        });
+        if (entry.fishEntries && Array.isArray(entry.fishEntries)) {
+          entry.fishEntries.forEach((fish) => {
+            if (!acc.fishBreakdown[fish.fishName]) {
+              acc.fishBreakdown[fish.fishName] = { quantity: 0, income: 0 };
+            }
+            acc.fishBreakdown[fish.fishName].quantity += fish.quantity || 0;
+            acc.fishBreakdown[fish.fishName].income += fish.totalPrice || 0;
+          });
+        }
 
         return acc;
       },
@@ -590,7 +579,7 @@ exports.sendMonthlyReportWhatsApp = async (req, res) => {
 
     console.log("📱 STEP 2: Generating PDF for WhatsApp");
 
-    // --- Generate PDF (reuse existing function) ---
+    // --- Generate PDF ---
     const pdfBuffer = await generatePDF(
       summary,
       recommendations,
@@ -602,58 +591,60 @@ exports.sendMonthlyReportWhatsApp = async (req, res) => {
 
     console.log("📱 STEP 3: PDF generated, size:", pdfBuffer.length, "bytes");
 
-    // --- Save PDF temporarily to public folder ---
-    const reportsDir = path.join(__dirname, "../public/reports");
-    if (!fs.existsSync(reportsDir)) {
-      fs.mkdirSync(reportsDir, { recursive: true });
-    }
-
-    const fileName = `monthly-report-${year}-${month}-${Date.now()}.pdf`;
-    const filePath = path.join(reportsDir, fileName);
-    fs.writeFileSync(filePath, pdfBuffer);
-
-    console.log("📱 STEP 4: PDF saved to:", filePath);
-
-    // --- Build public URL for Twilio to fetch ---
-    const pdfUrl = `${publicReportBaseUrl}/reports/${fileName}`;
-
-    console.log("📱 STEP 5: PDF public URL:", pdfUrl);
-
-    // --- Compose WhatsApp message ---
+    // --- Compose WhatsApp caption ---
     const profitEmoji = summary.totalNetProfit >= 0 ? "📈" : "📉";
-    const message =
+    const profitMargin =
+      summary.totalIncome > 0
+        ? ((summary.totalNetProfit / summary.totalIncome) * 100).toFixed(1)
+        : 0;
+
+    const caption =
       `*Deewaraya - Monthly Finance Report*\n\n` +
       `📅 Period: ${monthName} ${year}\n` +
       `💰 Total Income: Rs. ${summary.totalIncome.toLocaleString()}\n` +
       `💸 Total Expenses: Rs. ${summary.totalExpenses.toLocaleString()}\n` +
       `${profitEmoji} Net Profit: Rs. ${summary.totalNetProfit.toLocaleString()}\n` +
       `🚤 Working Days: ${summary.workingDays}\n` +
-      `📊 Profit Margin: ${summary.totalIncome > 0 ? ((summary.totalNetProfit / summary.totalIncome) * 100).toFixed(1) : 0}%\n\n` +
+      `📊 Profit Margin: ${profitMargin}%\n\n` +
       `The detailed PDF report is attached below.`;
 
-    // --- Send via Twilio WhatsApp ---
-    console.log("📱 STEP 6: Sending WhatsApp to:", normalizedWhatsappNumber);
-    await sendWhatsAppPDF(normalizedWhatsappNumber, pdfUrl, message);
+    // --- Send via whatsapp-web.js ---
+    console.log("📱 STEP 4: Sending WhatsApp to:", normalizedNumber);
+    const fileName = `Deewaraya_Report_${monthName}_${year}.pdf`;
 
-    console.log("✅ STEP 7: WhatsApp sent successfully!");
+    await sendWhatsAppPDF(normalizedNumber, pdfBuffer, caption, fileName);
 
-    // --- Cleanup: delete temp PDF after 10 minutes ---
-    setTimeout(() => {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        console.log("🗑️ Temp PDF deleted:", fileName);
-      }
-    }, 10 * 60 * 1000);
+    console.log("✅ STEP 5: WhatsApp sent successfully!");
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Monthly report sent to WhatsApp successfully!",
+      message: `Monthly report sent to ${normalizedNumber} successfully!`,
     });
   } catch (error) {
     console.error("❌ Send WhatsApp error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message || "Failed to send WhatsApp report",
+    });
+  }
+};
+
+// ==================== WHATSAPP STATUS ====================
+
+exports.getWhatsAppConnectionStatus = async (req, res) => {
+  try {
+    const status = getWhatsAppStatus();
+    res.json({
+      success: true,
+      data: {
+        connected: status.connected,
+        phoneNumber: status.phoneNumber,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
     });
   }
 };
@@ -785,7 +776,7 @@ function generateRecommendations(data) {
   return recommendations;
 }
 
-// PDF Generator
+// PDF Generator - Clean Professional 3-Page Report (No glitch / No empty pages)
 async function generatePDF(
   summary,
   recommendations,
@@ -795,39 +786,59 @@ async function generatePDF(
   ownerName
 ) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: "A4", margin: 44, bufferPages: true });
-    const buffers = [];
-    const pageWidth = doc.page.width;
-    const pageHeight = doc.page.height;
-    const contentWidth = pageWidth - 88;
-    const colors = {
-      navy: "#1E3A8A",
-      blue: "#2563EB",
-      teal: "#0891B2",
-      green: "#10B981",
-      red: "#EF4444",
-      ink: "#1E293B",
-      muted: "#64748B",
-      line: "#CBD5E1",
-      paleBlue: "#EFF6FF",
-      paleGreen: "#ECFDF5",
-      paleRed: "#FEF2F2",
-      paleGold: "#ECFEFF",
-      white: "#FFFFFF",
-    };
-    const money = (value) => `Rs. ${Math.round(value || 0).toLocaleString()}`;
-    const percentage = (value, total) =>
-      total > 0 ? `${((value / total) * 100).toFixed(1)}%` : "0.0%";
-    const profitColor = summary.totalNetProfit >= 0 ? colors.green : colors.red;
-    const margin =
-      summary.totalIncome > 0
-        ? (summary.totalNetProfit / summary.totalIncome) * 100
-        : 0;
-    let pageNumber = 1;
+    const doc = new PDFDocument({
+      size: "A4",
+      margin: 50,
+      bufferPages: true,
+      autoFirstPage: true,
+    });
 
+    const buffers = [];
     doc.on("data", (chunk) => buffers.push(chunk));
     doc.on("end", () => resolve(Buffer.concat(buffers)));
     doc.on("error", reject);
+
+    // ========== LAYOUT ==========
+    const pageW = doc.page.width;
+    const pageH = doc.page.height;
+    const L = 50;                 // left
+    const R = pageW - 50;         // right
+    const W = R - L;              // content width
+    const CX = pageW / 2;         // center
+
+    // ========== COLORS ==========
+    const C = {
+      navy: "#123B3D",
+      blue: "#0B6E6B",
+      sky: "#6FAEAA",
+      teal: "#167F79",
+      green: "#167F79",
+      red: "#DC2626",
+      orange: "#167F79",
+      ink: "#203536",
+      muted: "#617675",
+      light: "#77908F",
+      line: "#C8D8D6",
+      bg: "#EEF5F4",
+      white: "#FFFFFF",
+      pBlue: "#E7F1F0",
+      pGreen: "#E7F1F0",
+      pRed: "#FEF2F2",
+      pTeal: "#E7F1F0",
+      pOrange: "#E7F1F0",
+    };
+
+    // ========== HELPERS ==========
+    const money = (v) => `Rs. ${Math.round(Number(v) || 0).toLocaleString("en-LK")}`;
+    const pct = (v, t) => (t > 0 ? `${((v / t) * 100).toFixed(1)}%` : "0%");
+    const safe = (v, d = 0) => (v === undefined || v === null || isNaN(v) ? d : v);
+
+    const totalIncome = safe(summary.totalIncome);
+    const totalExpenses = safe(summary.totalExpenses);
+    const totalNetProfit = safe(summary.totalNetProfit);
+    const workingDays = safe(summary.workingDays, 0);
+    const profitMargin = totalIncome > 0 ? (totalNetProfit / totalIncome) * 100 : 0;
+    const profitColor = totalNetProfit >= 0 ? C.green : C.red;
 
     const categoryLabels = {
       fuel: "Fuel",
@@ -838,172 +849,485 @@ async function generatePDF(
       other: "Other",
     };
 
-    const drawFooter = () => {
-      doc.save();
-      doc.strokeColor(colors.line).lineWidth(0.7)
-        .moveTo(44, pageHeight - 76).lineTo(pageWidth - 44, pageHeight - 76).stroke();
-      doc.font("Helvetica").fontSize(8).fillColor(colors.muted)
-        .text("Deewaraya Finance | Confidential owner report", 44, pageHeight - 65, { width: 330 });
-      doc.text(`Page ${pageNumber}`, pageWidth - 100, pageHeight - 65, { width: 56, align: "right" });
-      doc.restore();
+    // Keep the report within its three planned pages.
+    const ensureSpace = (need = 60) => {
+      return doc.y <= pageH - 55 - need;
     };
 
-    const drawPageHeader = (sectionTitle) => {
-      doc.rect(0, 0, pageWidth, 78).fill(colors.navy);
-      doc.font("Helvetica-Bold").fontSize(22).fillColor(colors.white)
-        .text("DEEWARAYA", 44, 22, { characterSpacing: 1.2 });
-      doc.font("Helvetica").fontSize(9).fillColor("#B9D5E5")
-        .text("MARITIME FINANCE MANAGEMENT", 45, 49, { characterSpacing: 1.1 });
-      doc.font("Helvetica-Bold").fontSize(11).fillColor(colors.white)
-        .text(sectionTitle.toUpperCase(), pageWidth - 220, 32, { width: 176, align: "right" });
-      doc.y = 104;
+    // Solid sea-green page header, repeated consistently across the report.
+    const drawTopBar = () => {
+      doc.rect(0, 0, pageW, 66).fill(C.navy);
+      doc.font("Helvetica-Bold").fontSize(10).fillColor(C.white)
+        .text("DEEWARAYA", L, 13, { characterSpacing: 1 });
+      doc.font("Helvetica-Bold").fontSize(15).fillColor(C.white)
+        .text("MONTHLY FINANCE REPORT", L, 31);
+      doc.font("Helvetica").fontSize(8).fillColor("#D4E7E4")
+        .text(`${monthName} ${year}`, L, 49);
+      doc.font("Helvetica").fontSize(8).fillColor("#D4E7E4")
+        .text(new Date().toLocaleDateString("en-GB"), L, 19, {
+          width: W,
+          align: "right",
+        });
+      doc.y = 82;
     };
 
-    const sectionTitle = (title, subtitle) => {
-      doc.font("Helvetica-Bold").fontSize(16).fillColor(colors.navy).text(title);
-      if (subtitle) {
-        doc.font("Helvetica").fontSize(9).fillColor(colors.muted).text(subtitle, { continued: false });
+    // Centered section title with underline
+    const sectionTitle = (title) => {
+      ensureSpace(40);
+      doc.moveDown(0.35);
+      doc.font("Helvetica-Bold").fontSize(12).fillColor(C.navy)
+        .text(String(title).toUpperCase(), L, doc.y, {
+          width: W,
+          align: "center",
+          characterSpacing: 0.8,
+        });
+      const tw = Math.min(doc.widthOfString(String(title).toUpperCase()) + 16, W);
+      const x0 = CX - tw / 2;
+      doc.moveTo(x0, doc.y + 3).lineTo(x0 + tw, doc.y + 3)
+        .strokeColor(C.blue).lineWidth(1.4).stroke();
+      doc.moveDown(0.85);
+    };
+
+    // Footer for current page number (drawn at end on all pages)
+    const drawFooterOnPage = (pageIndex1Based) => {
+      doc.moveTo(L, pageH - 82).lineTo(R, pageH - 82)
+        .strokeColor(C.line).lineWidth(0.7).stroke();
+      doc.font("Helvetica").fontSize(7).fillColor(C.light)
+        .text("Deewaraya Finance  |  Confidential Owner Report", L, pageH - 72, {
+          width: W - 50,
+          lineBreak: false,
+        });
+      doc.font("Helvetica").fontSize(7).fillColor(C.light)
+        .text(`Page ${pageIndex1Based}`, L, pageH - 72, {
+          width: W,
+          align: "right",
+          lineBreak: false,
+        });
+    };
+
+    // Compact text row for category breakdowns.
+    const drawBarRow = (label, sub, amount, total) => {
+      ensureSpace(28);
+      const y = doc.y;
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(C.ink)
+        .text(label, L, y, { width: 190, ellipsis: true });
+      if (sub) {
+        doc.font("Helvetica").fontSize(8).fillColor(C.muted)
+          .text(sub, L + 200, y, { width: 110, ellipsis: true });
       }
-      doc.moveDown(0.65);
+      doc.font("Helvetica-Bold").fontSize(8.5).fillColor(C.ink)
+        .text(money(amount), R - 112, y, { width: 112, align: "right" });
+      doc.font("Helvetica").fontSize(7.5).fillColor(C.muted)
+        .text(pct(amount, total), R - 112, y + 11, { width: 112, align: "right" });
+      doc.moveTo(L, y + 20).lineTo(R, y + 20).strokeColor(C.line).lineWidth(0.45).stroke();
+      doc.y = y + (sub ? 27 : 24);
     };
 
-    const metricCard = (x, y, width, label, value, accent, fill) => {
-      doc.roundedRect(x, y, width, 73, 8).fillAndStroke(fill, colors.line);
-      doc.rect(x, y, 5, 73).fill(accent);
-      doc.font("Helvetica").fontSize(9).fillColor(colors.muted).text(label.toUpperCase(), x + 16, y + 14, { width: width - 25 });
-      doc.font("Helvetica-Bold").fontSize(15).fillColor(colors.ink).text(value, x + 16, y + 35, { width: width - 25 });
-    };
+    // ========== PAGE 1 ==========
+    drawTopBar();
 
-    const drawBreakdown = (title, items, total, itemValue) => {
-      sectionTitle(title, "A clear view of where the month's money came from or went.");
+    doc.font("Helvetica").fontSize(9).fillColor(C.muted)
+      .text(`Prepared for ${ownerName || "Boat Owner"}`, L, doc.y, { width: W });
+    doc.moveDown(0.9);
+
+    // 4 metric cards
+    {
+      const gap = 12;
+      const cardW = (W - gap * 3) / 4;
+      const y0 = doc.y;
+      const cards = [
+        { t: "TOTAL INCOME", v: money(totalIncome), a: C.blue, bg: C.pBlue },
+        { t: "TOTAL EXPENSES", v: money(totalExpenses), a: C.red, bg: C.pRed },
+        {
+          t: "NET PROFIT",
+          v: money(totalNetProfit),
+          a: profitColor,
+          bg: totalNetProfit >= 0 ? C.pGreen : C.pRed,
+        },
+        {
+          t: "PROFIT MARGIN",
+          v: `${profitMargin.toFixed(1)}%`,
+          a: C.teal,
+          bg: C.pTeal,
+        },
+      ];
+
+      cards.forEach((c, i) => {
+        const x = L + i * (cardW + gap);
+        if (i > 0) doc.moveTo(x - gap / 2, y0).lineTo(x - gap / 2, y0 + 53).strokeColor(C.line).lineWidth(0.7).stroke();
+        doc.font("Helvetica").fontSize(7).fillColor(C.muted)
+          .text(c.t, x, y0 + 4, { width: cardW, align: "center" });
+        doc.font("Helvetica-Bold").fontSize(10).fillColor(c.a)
+          .text(c.v, x, y0 + 24, { width: cardW, align: "center", ellipsis: true });
+      });
+      doc.moveTo(L, y0 + 56).lineTo(R, y0 + 56).strokeColor(C.line).lineWidth(0.7).stroke();
+      doc.y = y0 + 70;
+    }
+
+    // Operating snapshot strip
+    {
+      const y0 = doc.y;
+      const h = 34;
+      const col = W / 3;
+      const avgIn = money(totalIncome / (workingDays || 1));
+      const avgEx = money(totalExpenses / (workingDays || 1));
+
+      const colItem = (title, val, ox) => {
+        doc.font("Helvetica").fontSize(7).fillColor(C.muted)
+          .text(title, L + ox, y0 + 3, { width: col, align: "center" });
+        doc.font("Helvetica-Bold").fontSize(9).fillColor(C.ink)
+          .text(val, L + ox, y0 + 16, { width: col, align: "center" });
+      };
+      doc.moveTo(L, y0).lineTo(R, y0).strokeColor(C.line).lineWidth(0.7).stroke();
+      colItem("WORKING DAYS", String(workingDays), 0);
+      colItem("AVG DAILY INCOME", avgIn, col);
+      colItem("AVG DAILY EXPENSE", avgEx, col * 2);
+      doc.moveTo(L, y0 + h).lineTo(R, y0 + h).strokeColor(C.line).lineWidth(0.7).stroke();
+      doc.y = y0 + h + 18;
+    }
+
+    // Expense breakdown
+    sectionTitle("Expense Breakdown");
+    {
+      const items = Object.entries(summary.expenseBreakdown || {})
+        .map(([k, v]) => [categoryLabels[k] || k, safe(v)])
+        .filter(([, v]) => v > 0)
+        .sort((a, b) => b[1] - a[1]);
+
       if (items.length === 0) {
-        doc.font("Helvetica").fontSize(10).fillColor(colors.muted).text("No records available for this period.");
-        return;
+        doc.font("Helvetica").fontSize(10).fillColor(C.muted)
+          .text("No expenses recorded for this month.", L, doc.y, {
+            width: W,
+            align: "center",
+          });
+        doc.moveDown(1);
+      } else {
+        items.slice(0, 6).forEach(([label, amount]) => {
+          drawBarRow(label, null, amount, totalExpenses);
+        });
+        if (items.length > 6) {
+          doc.font("Helvetica-Oblique").fontSize(8).fillColor(C.muted)
+            .text(`Showing 6 of ${items.length} expense categories.`, L, doc.y);
+        }
+        doc.moveDown(0.4);
       }
-      const barWidth = 188;
-      items.forEach(([label, value], index) => {
-        const y = doc.y;
-        const amount = itemValue(value);
-        const share = total > 0 ? amount / total : 0;
-        doc.font("Helvetica-Bold").fontSize(9).fillColor(colors.ink).text(label, 44, y, { width: 145 });
-        doc.font("Helvetica").fontSize(9).fillColor(colors.muted).text(`${money(amount)}  |  ${percentage(amount, total)}`, 280, y, { width: 105, align: "right" });
-        doc.roundedRect(44, y + 17, barWidth, 7, 3).fill("#E7EEF3");
-        doc.roundedRect(44, y + 17, Math.max(share * barWidth, share > 0 ? 4 : 0), 7, 3).fill(index % 2 ? colors.teal : colors.blue);
-        doc.y = y + 36;
+    }
+
+    sectionTitle("Weekly Cash Flow");
+    {
+      const referenceDate = entries?.length ? new Date(entries[0].date) : new Date(year, 0, 1);
+      const daysInMonth = new Date(
+        referenceDate.getFullYear(),
+        referenceDate.getMonth() + 1,
+        0
+      ).getDate();
+      const weeks = Array.from({ length: 5 }, (_, index) => ({
+        label: `Days ${String(index * 7 + 1).padStart(2, "0")}-${String(Math.min((index + 1) * 7, daysInMonth)).padStart(2, "0")}`,
+        days: 0,
+        income: 0,
+        expenses: 0,
+        profit: 0,
+      }));
+      (entries || []).forEach((entry) => {
+        const day = new Date(entry.date).getDate();
+        const week = weeks[Math.min(Math.floor((day - 1) / 7), 4)];
+        week.days += 1;
+        week.income += safe(entry.totalIncome);
+        week.expenses += safe(entry.totalExpenses);
+        week.profit += safe(entry.netProfit, safe(entry.totalIncome) - safe(entry.totalExpenses));
       });
-    };
 
-    drawPageHeader("Monthly Finance Report");
-    doc.font("Helvetica-Bold").fontSize(25).fillColor(colors.navy).text(`${monthName} ${year}`);
-    doc.font("Helvetica").fontSize(10).fillColor(colors.muted).text(`Prepared for ${ownerName}  |  Generated ${new Date().toLocaleDateString()}`);
-    doc.moveDown(1.2);
+      const headerY = doc.y;
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(C.muted)
+        .text("PERIOD", L, headerY)
+        .text("DAYS", L + 128, headerY, { width: 42, align: "right" })
+        .text("INCOME", L + 185, headerY, { width: 95, align: "right" })
+        .text("EXPENSES", L + 292, headerY, { width: 100, align: "right" })
+        .text("PROFIT", R - 78, headerY, { width: 78, align: "right" });
+      doc.moveTo(L, headerY + 14).lineTo(R, headerY + 14).strokeColor(C.blue).lineWidth(0.8).stroke();
+      doc.y = headerY + 21;
 
-    sectionTitle("Executive Summary", "Your financial performance at a glance.");
-    const cardGap = 10;
-    const cardWidth = (contentWidth - cardGap) / 2;
-    const firstRowY = doc.y;
-    metricCard(44, firstRowY, cardWidth, "Total income", money(summary.totalIncome), colors.blue, colors.paleBlue);
-    metricCard(44 + cardWidth + cardGap, firstRowY, cardWidth, "Total expenses", money(summary.totalExpenses), colors.red, colors.paleRed);
-    metricCard(44, firstRowY + 84, cardWidth, "Net profit", money(summary.totalNetProfit), profitColor, summary.totalNetProfit >= 0 ? colors.paleGreen : colors.paleRed);
-    metricCard(44 + cardWidth + cardGap, firstRowY + 84, cardWidth, "Profit margin", `${margin.toFixed(1)}%`, colors.teal, colors.paleGold);
-    doc.y = firstRowY + 184;
+      weeks.forEach((week) => {
+        const y = doc.y;
+        doc.font("Helvetica").fontSize(8.5).fillColor(C.ink)
+          .text(week.label, L, y)
+          .text(String(week.days), L + 128, y, { width: 42, align: "right" })
+          .text(money(week.income), L + 185, y, { width: 95, align: "right" })
+          .text(money(week.expenses), L + 292, y, { width: 100, align: "right" });
+        doc.font("Helvetica-Bold").fontSize(8.5)
+          .fillColor(week.profit >= 0 ? C.green : C.red)
+          .text(money(week.profit), R - 78, y, { width: 78, align: "right" });
+        doc.moveTo(L, y + 19).lineTo(R, y + 19).strokeColor(C.line).lineWidth(0.4).stroke();
+        doc.y = y + 31;
+      });
 
-    const detailY = doc.y;
-    doc.roundedRect(44, detailY, contentWidth, 59, 8).fillAndStroke("#F6F9FB", colors.line);
-    doc.font("Helvetica-Bold").fontSize(9).fillColor(colors.navy).text("OPERATING SNAPSHOT", 58, detailY + 14);
-    doc.font("Helvetica").fontSize(10).fillColor(colors.ink)
-      .text(`Working days: ${summary.workingDays}`, 58, detailY + 33)
-      .text(`Average daily income: ${money(summary.totalIncome / (summary.workingDays || 1))}`, 190, detailY + 33)
-      .text(`Average daily expense: ${money(summary.totalExpenses / (summary.workingDays || 1))}`, 386, detailY + 33);
-    doc.y = detailY + 86;
+      const bestWeek = weeks.reduce(
+        (best, week) => week.days && (!best || week.profit > best.profit) ? week : best,
+        null
+      );
+      const highlights = [
+        ["Highest weekly profit", bestWeek ? `${bestWeek.label}  |  ${money(bestWeek.profit)}` : "No weekly activity"],
+        ["Expenses as share of income", pct(totalExpenses, totalIncome)],
+        ["Average daily profit", money(totalNetProfit / (workingDays || 1))],
+      ];
+      sectionTitle("Period Highlights");
+      highlights.forEach(([label, value]) => {
+        const y = doc.y;
+        doc.font("Helvetica-Bold").fontSize(8.5).fillColor(C.ink)
+          .text(label, L, y, { width: 210 });
+        doc.font("Helvetica").fontSize(8.5).fillColor(C.blue)
+          .text(value, L + 215, y, { width: W - 215, align: "right", ellipsis: true });
+        doc.moveTo(L, y + 17).lineTo(R, y + 17).strokeColor(C.line).lineWidth(0.4).stroke();
+        doc.y = y + 23;
+      });
+    }
 
-    const expenseItems = Object.entries(summary.expenseBreakdown || {})
-      .sort((a, b) => b[1] - a[1])
-      .map(([category, amount]) => [categoryLabels[category] || category, amount]);
-    drawBreakdown("Expense Breakdown", expenseItems, summary.totalExpenses, (value) => value);
-
+    // ========== PAGE 2 ==========
     doc.addPage();
-    pageNumber += 1;
-    drawPageHeader("Income Analysis");
-    const fishItems = Object.entries(summary.fishBreakdown || {})
-      .sort((a, b) => b[1].income - a[1].income);
-    sectionTitle("Income by Catch", "Revenue contribution from each recorded fish category.");
-    if (fishItems.length === 0) {
-      doc.font("Helvetica").fontSize(10).fillColor(colors.muted).text("No catch records available for this period.");
-    } else {
-      const tableTop = doc.y;
-      doc.roundedRect(44, tableTop, contentWidth, 29, 5).fill(colors.navy);
-      doc.font("Helvetica-Bold").fontSize(9).fillColor(colors.white)
-        .text("FISH CATEGORY", 57, tableTop + 10)
-        .text("QUANTITY", 280, tableTop + 10, { width: 75, align: "right" })
-        .text("REVENUE", 420, tableTop + 10, { width: 95, align: "right" });
-      doc.y = tableTop + 38;
-      fishItems.slice(0, 4).forEach(([name, data], index) => {
-        const y = doc.y;
-        if (index % 2 === 0) doc.rect(44, y - 5, contentWidth, 29).fill("#F5F8FA");
-        doc.font("Helvetica-Bold").fontSize(9).fillColor(colors.ink).text(name, 57, y + 3, { width: 190 });
-        doc.font("Helvetica").text(`${data.quantity} ${data.unit || "kg"}`, 280, y + 3, { width: 75, align: "right" });
-        doc.font("Helvetica-Bold").fillColor(colors.blue).text(money(data.income), 420, y + 3, { width: 95, align: "right" });
-        doc.y = y + 29;
-      });
-      if (fishItems.length > 4) {
-        doc.font("Helvetica-Oblique").fontSize(8).fillColor(colors.muted)
-          .text(`Showing top 4 of ${fishItems.length} fish categories.`, 57, doc.y + 2);
-        doc.y += 18;
+    drawTopBar();
+
+    // Income by catch
+    sectionTitle("Income by Catch");
+    {
+      const items = Object.entries(summary.fishBreakdown || {})
+        .map(([name, d]) => ({
+          name,
+          qty: safe(d?.quantity),
+          unit: d?.unit || "kg",
+          income: safe(d?.income),
+        }))
+        .filter((x) => x.income > 0 || x.qty > 0)
+        .sort((a, b) => b.income - a.income);
+
+      if (items.length === 0) {
+        doc.font("Helvetica").fontSize(10).fillColor(C.muted)
+          .text("No catch records for this month.", L, doc.y, {
+            width: W,
+            align: "center",
+          });
+        doc.moveDown(1);
+      } else {
+        items.slice(0, 6).forEach((it) => {
+          drawBarRow(
+            it.name,
+            `${it.qty} ${it.unit}`,
+            it.income,
+            totalIncome
+          );
+        });
+        if (items.length > 6) {
+          doc.font("Helvetica-Oblique").fontSize(8).fillColor(C.muted)
+            .text(`Showing top 6 of ${items.length} fish categories.`, L, doc.y);
+        }
+        doc.moveDown(0.5);
       }
     }
 
-    doc.moveDown(0.5);
-    sectionTitle("Recommendations", "Practical observations based on this month's records.");
-    if (recommendations.length === 0) {
-      doc.font("Helvetica").fontSize(9).fillColor(colors.muted).text("No additional recommendations for this period.");
-      doc.moveDown(0.8);
-    } else {
-      recommendations.slice(0, 1).forEach((rec) => {
-        const accent = rec.type === "warning" ? colors.red : rec.type === "success" ? colors.green : colors.blue;
-        const fill = rec.type === "warning" ? colors.paleRed : rec.type === "success" ? colors.paleGreen : colors.paleBlue;
-        const y = doc.y;
-        doc.roundedRect(44, y, contentWidth, 46, 6).fillAndStroke(fill, colors.line);
-        doc.rect(44, y, 4, 46).fill(accent);
-        doc.font("Helvetica-Bold").fontSize(9).fillColor(accent).text(rec.title, 58, y + 9);
-        doc.font("Helvetica").fontSize(8).fillColor(colors.ink).text(rec.message, 58, y + 24, { width: contentWidth - 72, height: 16, ellipsis: true });
-        doc.y = y + 55;
+    // Operational insights (always filled)
+    sectionTitle("Operational Insights");
+    {
+      const fuel = safe(summary.expenseBreakdown?.fuel);
+      const fuelPct = totalExpenses > 0 ? (fuel / totalExpenses) * 100 : 0;
+
+      let best = null;
+      let worst = null;
+      (entries || []).forEach((e) => {
+        const p = safe(e.netProfit);
+        if (!best || p > safe(best.netProfit)) best = e;
+        if (!worst || p < safe(worst.netProfit)) worst = e;
       });
-      if (recommendations.length > 1) {
-        doc.font("Helvetica-Oblique").fontSize(8).fillColor(colors.muted).text(`Showing 2 of ${recommendations.length} recommendations.`);
+
+      const bestText = best
+        ? `${new Date(best.date).toLocaleDateString("en-GB")} | ${money(best.netProfit)}`
+        : "Not enough daily data yet. Keep logging daily trips.";
+      const worstText = worst
+        ? `${new Date(worst.date).toLocaleDateString("en-GB")} | ${money(worst.netProfit)}`
+        : "No weak day detected from current records.";
+      const insights = [
+        ["Fuel share of expenses", `${fuelPct.toFixed(1)}%  |  ${money(fuel)}`],
+        ["Best profit day", bestText],
+        ["Lowest profit day", worstText],
+        ["Average daily net", money(totalNetProfit / (workingDays || 1))],
+      ];
+      insights.forEach(([label, value]) => {
+        const y = doc.y;
+        doc.font("Helvetica-Bold").fontSize(8.5).fillColor(C.ink)
+          .text(label, L, y, { width: 190 });
+        doc.font("Helvetica").fontSize(8.5).fillColor(C.muted)
+          .text(value, L + 195, y, { width: W - 195, align: "right", ellipsis: true });
+        doc.moveTo(L, y + 15).lineTo(R, y + 15).strokeColor(C.line).lineWidth(0.45).stroke();
+        doc.y = y + 19;
+      });
+    }
+
+    // Recommendations (always show something)
+    sectionTitle("Recommendations");
+    {
+      const list =
+        recommendations && recommendations.length
+          ? recommendations.slice(0, 2)
+          : [
+              {
+                type: "info",
+                title: "Keep Daily Logging",
+                message:
+                  "Continue recording catch and expenses every trip for more accurate monthly decisions.",
+              },
+            ];
+
+      list.forEach((rec) => {
+        ensureSpace(56);
+        const y = doc.y;
+        doc.font("Helvetica-Bold").fontSize(8.5).fillColor(C.blue)
+          .text(rec.title || "Note", L, y, { width: W });
+        doc.font("Helvetica").fontSize(8).fillColor(C.ink)
+          .text(rec.message || "", L, y + 13, {
+            width: W,
+            height: 22,
+            ellipsis: true,
+          });
+        doc.moveTo(L, y + 39).lineTo(R, y + 39).strokeColor(C.line).lineWidth(0.45).stroke();
+        doc.y = y + 45;
+      });
+    }
+
+    sectionTitle("Expense Activity");
+    {
+      const activityCounts = {};
+      (entries || []).forEach((entry) => {
+        (entry.expenses || []).forEach((expense) => {
+          activityCounts[expense.category] = (activityCounts[expense.category] || 0) + 1;
+        });
+      });
+      const expenseItems = Object.entries(summary.expenseBreakdown || {})
+        .map(([category, amount]) => ({
+          category: categoryLabels[category] || category,
+          count: activityCounts[category] || 0,
+          amount: safe(amount),
+        }))
+        .filter((item) => item.amount > 0)
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 6);
+
+      const headerY = doc.y;
+      doc.font("Helvetica-Bold").fontSize(7.5).fillColor(C.muted)
+        .text("EXPENSE CATEGORY", L, headerY)
+        .text("ITEMS", L + 250, headerY, { width: 55, align: "right" })
+        .text("MONTHLY TOTAL", R - 125, headerY, { width: 125, align: "right" });
+      doc.moveTo(L, headerY + 14).lineTo(R, headerY + 14).strokeColor(C.blue).lineWidth(0.8).stroke();
+      doc.y = headerY + 21;
+
+      if (expenseItems.length === 0) {
+        doc.font("Helvetica").fontSize(8.5).fillColor(C.muted)
+          .text("No expense activity recorded for this month.", L, doc.y);
+        doc.moveDown(1);
+      } else {
+        expenseItems.forEach((item) => {
+          const y = doc.y;
+          doc.font("Helvetica").fontSize(8.5).fillColor(C.ink)
+            .text(item.category, L, y, { width: 230, ellipsis: true })
+            .text(String(item.count), L + 250, y, { width: 55, align: "right" });
+          doc.font("Helvetica-Bold").fontSize(8.5).fillColor(C.blue)
+            .text(money(item.amount), R - 125, y, { width: 125, align: "right" });
+          doc.moveTo(L, y + 19).lineTo(R, y + 19).strokeColor(C.line).lineWidth(0.4).stroke();
+          doc.y = y + 25;
+        });
       }
     }
 
-    doc.moveDown(0.3);
-    if (entries.length > 0) {
-      sectionTitle("Daily Performance", "Income, expenses and profit recorded for each working day.");
-      const tableTop = doc.y;
-      doc.roundedRect(44, tableTop, contentWidth, 29, 5).fill(colors.navy);
-      doc.font("Helvetica-Bold").fontSize(8).fillColor(colors.white)
-        .text("DATE", 57, tableTop + 10)
-        .text("INCOME", 190, tableTop + 10, { width: 90, align: "right" })
-        .text("EXPENSES", 300, tableTop + 10, { width: 90, align: "right" })
-        .text("NET PROFIT", 420, tableTop + 10, { width: 95, align: "right" });
-      doc.y = tableTop + 38;
-      const visibleEntries = entries.slice(0, 5);
-      visibleEntries.forEach((entry, index) => {
-        const y = doc.y;
-        if (index % 2 === 0) doc.rect(44, y - 5, contentWidth, 25).fill("#F5F8FA");
-        doc.font("Helvetica").fontSize(8.5).fillColor(colors.ink)
-          .text(new Date(entry.date).toLocaleDateString(), 57, y + 3)
-          .text(money(entry.totalIncome), 190, y + 3, { width: 90, align: "right" })
-          .text(money(entry.totalExpenses), 300, y + 3, { width: 90, align: "right" });
-        doc.font("Helvetica-Bold").fillColor(entry.netProfit >= 0 ? colors.green : colors.red)
-          .text(money(entry.netProfit), 420, y + 3, { width: 95, align: "right" });
-        doc.y = y + 25;
-      });
-      if (entries.length > visibleEntries.length) {
-        doc.font("Helvetica-Oblique").fontSize(8).fillColor(colors.muted)
-          .text(`Showing 5 of ${entries.length} daily entries in this two-page report.`);
+    // ========== PAGE 3 ==========
+    doc.addPage();
+    drawTopBar();
+    sectionTitle("Daily Expenses & Profit");
+
+    {
+      const rows = Array.isArray(entries)
+        ? [...entries].sort((a, b) => new Date(a.date) - new Date(b.date))
+        : [];
+
+      if (rows.length === 0) {
+        doc.font("Helvetica").fontSize(10).fillColor(C.muted)
+          .text("No daily entries for this month.", L, doc.y, {
+            width: W,
+            align: "center",
+          });
+      } else {
+        // header strip
+        ensureSpace(30);
+        const hy = doc.y;
+        doc.roundedRect(L, hy, W, 18, 4).fill(C.navy);
+        doc.font("Helvetica-Bold").fontSize(8).fillColor(C.white);
+        doc.text("DATE", L + 10, hy + 5);
+        doc.text("INCOME", L + 120, hy + 5, { width: 90, align: "right" });
+        doc.text("DAILY EXPENSES", L + 230, hy + 5, { width: 90, align: "right" });
+        doc.text("DAILY PROFIT", L + 340, hy + 5, { width: W - 350, align: "right" });
+        doc.y = hy + 24;
+
+        rows.slice(0, 31).forEach((e, idx) => {
+          ensureSpace(24);
+          const y = doc.y;
+          const d = new Date(e.date).toLocaleDateString("en-GB", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          });
+          const inc = safe(e.totalIncome);
+          const exp = safe(e.totalExpenses);
+          const net = safe(e.netProfit, inc - exp);
+
+          doc.font("Helvetica-Bold").fontSize(8.5).fillColor(C.ink)
+            .text(d, L + 10, y);
+          doc.font("Helvetica").fontSize(8.5).fillColor(C.blue)
+            .text(money(inc), L + 120, y, { width: 90, align: "right" });
+          doc.font("Helvetica").fontSize(8.5).fillColor(C.red)
+            .text(money(exp), L + 230, y, { width: 90, align: "right" });
+          doc.font("Helvetica-Bold").fontSize(8.5)
+            .fillColor(net >= 0 ? C.green : C.red)
+            .text(money(net), L + 340, y, { width: W - 350, align: "right" });
+          doc.moveTo(L, y + 15).lineTo(R, y + 15).strokeColor(C.line).lineWidth(0.35).stroke();
+          doc.y = y + 17;
+        });
+
+        doc.moveDown(0.8);
+        doc.font("Helvetica").fontSize(8).fillColor(C.muted)
+          .text(
+            rows.length > 31
+              ? `Showing 31 of ${rows.length} daily records.`
+              : `Total working days logged: ${rows.length}`,
+            L,
+            doc.y,
+            {
+            width: W,
+            align: "right",
+            }
+          );
       }
     }
 
-    drawFooter();
+    // Final summary box (fills leftover space usefully)
+    doc.moveDown(1);
+    ensureSpace(70);
+    {
+      const y = doc.y;
+      doc.moveTo(L, y).lineTo(R, y).strokeColor(C.blue).lineWidth(1).stroke();
+      doc.font("Helvetica-Bold").fontSize(9).fillColor(C.blue)
+        .text("MONTH CLOSE", L, y + 8);
+      doc.font("Helvetica").fontSize(8).fillColor(C.ink)
+        .text(
+          `Income ${money(totalIncome)}   |   Expenses ${money(totalExpenses)}   |   Net ${money(totalNetProfit)}   |   Margin ${profitMargin.toFixed(1)}%`,
+          L,
+          y + 24,
+          { width: W - 28 }
+        );
+      doc.y = y + 42;
+    }
+
+    // Draw footers on all pages
+    const range = doc.bufferedPageRange(); // { start, count }
+    for (let i = 0; i < range.count; i++) {
+      doc.switchToPage(range.start + i);
+      drawFooterOnPage(i + 1);
+    }
 
     doc.end();
   });

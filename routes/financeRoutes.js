@@ -1,42 +1,53 @@
-// server/routes/financeRoutes.js
-
 const express = require("express");
 const router = express.Router();
-const financeController = require("../controllers/financeController");
+
+const {
+  createDailyEntry,
+  getDailyEntries,
+  getDailyEntryById,
+  updateDailyEntry,
+  deleteDailyEntry,
+  getMonthlyReport,
+  getMonthlyComparison,
+  sendMonthlyPDFEmail,
+  sendMonthlyReportWhatsApp,
+  getWhatsAppConnectionStatus,
+  getDashboardStats,
+} = require("../controllers/financeController");
+
+// Auth Middleware (ඔබේ project එකේ auth middleware එකේ නම අනුව වෙනස් කරන්න)
 const { protect } = require("../middleware/authMiddleware");
-const { sendMonthlyReportWhatsApp } = require("../controllers/financeController");
 
-// ✅ Debug - Check if controller functions exist
-console.log("Finance controller loaded:", {
-  createDailyEntry: typeof financeController.createDailyEntry,
-  getDailyEntries: typeof financeController.getDailyEntries,
-  getMonthlyReport: typeof financeController.getMonthlyReport,
-  sendMonthlyPDFEmail: typeof financeController.sendMonthlyPDFEmail,
-});
+// ==================== DASHBOARD & STATS ====================
+router.get("/dashboard-stats", protect, getDashboardStats);
 
-console.log("Protect middleware:", typeof protect);
+// ==================== DAILY ENTRIES ====================
+router.route("/daily")
+  .post(protect, createDailyEntry)
+  .get(protect, getDailyEntries);
 
-// Monthly - specific routes FIRST (before :param routes)
-router.get("/monthly/compare", protect, financeController.getMonthlyComparison);
-router.post("/monthly/send-pdf", protect, financeController.sendMonthlyPDFEmail);
-router.get("/monthly/:year/:month", protect, financeController.getMonthlyReport);
+router.route("/daily/:id")
+  .get(protect, getDailyEntryById)
+  .put(protect, updateDailyEntry)
+  .delete(protect, deleteDailyEntry);
 
-// Dashboard
-router.get("/dashboard-stats", protect, financeController.getDashboardStats);
+// ==================== MONTHLY REPORTS & COMPARISON ====================
+router.get("/monthly/:year/:month", protect, getMonthlyReport);
 
-// Daily entries
-router.post("/daily", protect, financeController.createDailyEntry);
-router.get("/daily", protect, financeController.getDailyEntries);
-router.get("/daily/:id", protect, financeController.getDailyEntryById);
-router.put("/daily/:id", protect, financeController.updateDailyEntry);
-router.delete("/daily/:id", protect, financeController.deleteDailyEntry);
-router.post("/monthly/send-whatsapp", protect, sendMonthlyReportWhatsApp);
+// ✅ Frontend URL වලට ගැලපෙන පරිදි Routes සකස් කර ඇත
+router.get("/comparison", protect, getMonthlyComparison);
+router.get("/monthly/compare", protect, getMonthlyComparison); // 👈 Frontend එකෙන් ඉල්ලන URL එක
 
-// TEMPORARY - Delete all your entries for testing
-router.delete("/reset", protect, async (req, res) => {
-  const DailyFinance = require("../models/Finance");
-  await DailyFinance.deleteMany({ ownerId: req.user._id });
-  res.json({ message: "All entries deleted" });
-});
+// ==================== PDF SENDING (EMAIL & WHATSAPP) ====================
+// ✅ Email routes දෙකම allow කර ඇත
+router.post("/send-email", protect, sendMonthlyPDFEmail);
+router.post("/monthly/send-pdf", protect, sendMonthlyPDFEmail); // 👈 Frontend එකෙන් ඉල්ලන Email PDF URL එක
+
+// ✅ WhatsApp routes දෙකම allow කර ඇත
+router.post("/send-whatsapp-report", protect, sendMonthlyReportWhatsApp);
+router.post("/monthly/send-whatsapp", protect, sendMonthlyReportWhatsApp); // 👈 Frontend එකෙන් ඉල්ලන URL එක
+
+// ==================== WHATSAPP STATUS ====================
+router.get("/whatsapp-status", protect, getWhatsAppConnectionStatus);
 
 module.exports = router;
