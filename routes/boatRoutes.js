@@ -6,7 +6,14 @@ const path = require("path");
 // Add Boat model import
 const Boat = require("../models/Boat");
 
-const { createBoat, getMyBoats, getAllBoats } = require("../controllers/boatController");
+const {
+  createBoat,
+  getMyBoats,
+  getAllBoats,
+  getAssignedBoats,
+  getDrivers,
+  assignBoatDriver,
+} = require("../controllers/boatController");
 const { protect, driverOrAdmin } = require("../middleware/authMiddleware");
 
 // Multer storage setup
@@ -45,7 +52,10 @@ router.get("/public/:id", async (req, res) => {
 
 // Protected routes
 router.post("/", protect, upload.single("image"), createBoat);
+router.get("/drivers", protect, getDrivers);
+router.get("/assigned", protect, getAssignedBoats);
 router.get("/", protect, getMyBoats);
 router.get("/all", protect, driverOrAdmin, getAllBoats);
+router.patch("/:id/driver", protect, assignBoatDriver);
 
 module.exports = router;
