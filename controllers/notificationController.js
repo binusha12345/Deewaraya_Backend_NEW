@@ -3,28 +3,24 @@ const Notification = require("../models/Notification");
 
 const reportConnectionStatus = async (req, res) => {
 	try {
-		const { boatId, status, latency, previousStatus: reportedPreviousStatus } = req.body;
+		const { boatId, status, latency } = req.body;
 		const validStatuses = ["good", "medium", "poor", "offline"];
 		if (!boatId || !validStatuses.includes(status)) {
 			return res.status(400).json({ message: "A valid boatId and connection status are required" });
 		}
 
-		const boat = await Boat.findById(boatId);
-		if (!boat) return res.status(404).json({ message: "Boat not found" });
 		if (req.user.role !== "driver") return res.status(403).json({ message: "Drivers only" });
+		const boat = await Boat.findOne({ _id: boatId, driver: req.user._id });
+		if (!boat) return res.status(404).json({ message: "Assigned boat not found" });
 
 		const previousStatus = boat.connectionStatus || "good";
-		const reportedOutage = reportedPreviousStatus === "poor" || reportedPreviousStatus === "offline";
-		if (previousStatus === status && !reportedOutage) {
+		await Boat.updateOne(
+			{ _id: boat._id },
+			{ $set: { connectionStatus: status, connectionCheckedAt: new Date() } }
+		);
+		if (previousStatus === status) {
 			return res.status(200).json({ changed: false });
 		}
-
-		const updatedBoat = await Boat.findOneAndUpdate(
-			{ _id: boat._id, connectionStatus: { $in: [previousStatus, null] } },
-			{ $set: { connectionStatus: status } },
-			{ new: true }
-		);
-		if (!updatedBoat) return res.status(200).json({ changed: false });
 
 		let notification = null;
 		const emittedNotifications = [];
@@ -38,20 +34,7 @@ const reportConnectionStatus = async (req, res) => {
 				message: `${boat.boatName}: the driver's internet connection is ${status}.`,
 			});
 			emittedNotifications.push(notification);
-		} else if (
-			previousStatus === "poor" || previousStatus === "offline" ||
-			reportedPreviousStatus === "poor" || reportedPreviousStatus === "offline"
-		) {
-			if (reportedPreviousStatus === "offline" && previousStatus !== "poor" && previousStatus !== "offline") {
-				const offlineNotification = await Notification.create({
-					owner: boat.owner,
-					boat: boat._id,
-					type: "connection_warning",
-					status: "offline",
-					message: `${boat.boatName}: the driver's internet connection was offline.`,
-				});
-				emittedNotifications.push(offlineNotification);
-			}
+		} else if (previousStatus === "poor" || previousStatus === "offline") {
 			notification = await Notification.create({
 				owner: boat.owner,
 				boat: boat._id,
