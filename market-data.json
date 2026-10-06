@@ -1,15 +1,15 @@
 {
-  "last_updated": "10/2/2026, 12:32:13 PM",
+  "last_updated": "10/6/2026, 11:30:04 AM",
   "currency": "LKR",
   "fuel": {
-    "auto_diesel": 382,
-    "super_diesel": 478,
+    "auto_diesel": 392,
+    "super_diesel": 528,
     "kerosene": 285
   },
   "fuel_effective_from": {
-    "auto_diesel": "29-06-2026 12.00 Midnight",
+    "auto_diesel": "30-09-2026 12.00 Midnight",
     "kerosene": "30-05-2026 12.00 Midnight",
-    "super_diesel": "30-05-2026 12.00 Midnight"
+    "super_diesel": "30-09-2026 12.00 Midnight"
   },
   "fuel_source": "https://ceypetco.gov.lk/marketing-sales/",
   "fish": [
@@ -44,5 +44,5 @@
       "unit": "kg"
     }
   ],
-  "fish_source": "System estimate (CFHC request failed)"
+  "fish_source": "System estimate (CFHC has no published price table)"
 }
