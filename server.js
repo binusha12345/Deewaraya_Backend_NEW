@@ -22,10 +22,11 @@ const connectDB = require("./config/db");
 // Services
 const { updateAllMarketPrices } = require("./services/marketService");
 const { scrapeCFHCFishPrices } = require("./services/cfhcScraperService");
+const { notifyOwnerDriverOffline } = require("./services/offlineAlertService");
 
 // Routes Imports
 const translateRoutes = require("./routes/translateRoutes");
-const financeRoutes = require("./routes/financeRoutes"); // ✅ financeRoutes එකටම point කර ඇත
+const financeRoutes = require("./routes/financeRoutes");
 
 // ==================== EXPRESS APP ====================
 const app = express();
@@ -53,15 +54,19 @@ const io = new Server(server, {
 });
 app.set("io", io);
 
+
+// ✅ Socket Authentication (Driver සහ Owner දෙදෙනාටම Allow කර ඇත)
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error("Authentication required"));
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select("_id role");
-    if (!user || user.role !== "owner")
-      return next(new Error("Owner access required"));
+    const user = await User.findById(decoded.id).select("_id role name");
+    if (!user) return next(new Error("User not found"));
+
     socket.data.userId = String(user._id);
+    socket.data.userRole = user.role;
+    socket.data.userName = user.name;
     next();
   } catch {
     next(new Error("Invalid authentication"));
@@ -69,7 +74,49 @@ io.use(async (socket, next) => {
 });
 
 io.on("connection", (socket) => {
-  socket.join(`owner:${socket.data.userId}`);
+  // Owner කෙනෙක් නම් Real-time Dashboard Updates සඳහා Room එකට එකතු කිරීම
+  if (socket.data.userRole === "owner") {
+    socket.join(`owner:${socket.data.userId}`);
+  }
+  if (socket.data.userRole === "driver") {
+    socket.join(`driver:${socket.data.userId}`);
+  }
+
+  // Driver කෙනෙක් register වන විට (location update එනකොටත් save කරන්න)
+  socket.on("register-driver", (data) => {
+    socket.data.boatId = data.boatId;
+    socket.data.driverName = data.driverName || socket.data.userName;
+    socket.data.latitude = data.latitude ?? null;
+    socket.data.longitude = data.longitude ?? null;
+    socket.data.placeName = data.placeName || null;
+
+    console.log(`⚓ Driver (${socket.data.driverName}) registered for boat: ${data.boatId}`);
+  });
+
+  // Live location updates එනවා නම්
+  socket.on("driver-location", (data) => {
+    if (!socket.data.boatId) return;
+
+    socket.data.latitude = data.latitude ?? socket.data.latitude;
+    socket.data.longitude = data.longitude ?? socket.data.longitude;
+    socket.data.placeName = data.placeName || socket.data.placeName;
+
+    socket.data.lastSeenAt = new Date();
+  });
+
+  socket.on("disconnect", () => {
+    if (!socket.data.boatId) return;
+
+    console.log(`📡 Driver for boat ${socket.data.boatId} went OFFLINE.`);
+
+    notifyOwnerDriverOffline(socket.data.boatId, {
+      driverName: socket.data.driverName,
+      latitude: socket.data.latitude,
+      longitude: socket.data.longitude,
+      placeName: socket.data.placeName,
+      offlineAt: new Date(),
+    }, io);
+  });
 });
 
 // ==================== CONNECT DATABASE ====================
@@ -80,35 +127,30 @@ scrapeCFHCFishPrices();
 updateAllMarketPrices();
 
 // ==================== MIDDLEWARE ====================
-// 1. CORS (මුලින්ම run විය යුතුයි)
 app.use(
   cors({
-    origin: true, // Development & Ngrok සඳහා ඕනෑම origin එකක් allow කරයි
+    origin: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
       "Content-Type", 
       "Authorization", 
-      "ngrok-skip-browser-warning" // 💡 Ngrok warning එක bypass කිරීමට අවශ්‍යයි
+      "ngrok-skip-browser-warning"
     ],
     credentials: true,
   })
 );
 
-// 2. Body Parsers
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// 3. Static Files
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// 4. Debug Logger
 app.use((req, res, next) => {
   console.log(`📨 ${req.method} ${req.url}`);
   next();
 });
 
 // ==================== INITIALIZE WHATSAPP CLIENT ====================
-// (Middlewares වලට පසුව run විය යුතුය)
 require("./services/whatsappClient");
 
 // ==================== ROUTES ====================
@@ -119,19 +161,16 @@ app.use("/api/boats", require("./routes/boatRoutes"));
 app.use("/api/weather", require("./routes/weatherRoutes"));
 app.use("/api/admin", require("./routes/adminRoutes"));
 app.use("/api/tracking", require("./routes/trackingRoutes"));
+app.use("/api/trips", require("./routes/tripRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/api/signal", require("./routes/signalRoutes"));
-
-// ✅ Finance Routes (Routes දෙකම එකම file එකකට Map කර ඇත)
+app.use("/api/emergency", require("./routes/emergencyRoutes"));
 app.use("/api/finance", financeRoutes);
 app.use("/api/financial", financeRoutes);
 
 app.use("/api/translate", translateRoutes);
-
-// ✅ Contact Route එක නිවැරදි කර ඇත
 app.use("/api/contact", require("./routes/contact"));
 
-// Root route
 app.get("/", (req, res) => {
   res.send("Deewaraya API Running...");
 });
@@ -140,6 +179,9 @@ app.get("/", (req, res) => {
 const { scheduleMonthlyFinanceEmails } = require("./jobs/monthlyFinanceJob");
 scheduleMonthlyFinanceEmails();
 
+const { startConnectionMonitor } = require("./jobs/connectionMonitor");
+startConnectionMonitor(io);
+
 // ==================== MARKET & FISH PRICE APIS ====================
 app.get("/api/market-prices", (req, res) => {
   try {
@@ -147,9 +189,7 @@ app.get("/api/market-prices", (req, res) => {
     const rawData = fs.readFileSync(dataPath);
     res.status(200).json({ success: true, data: JSON.parse(rawData) });
   } catch (error) {
-    res
-      .status(500)
-      .json({ success: false, message: "Error reading market data" });
+    res.status(500).json({ success: false, message: "Error reading market data" });
   }
 });
 
