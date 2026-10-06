@@ -131,7 +131,8 @@ const getAssignedBoats = async (req, res) => {
       return res.status(403).json({ message: "Drivers only" });
     }
     const boats = await Boat.find({ driver: req.user._id })
-      .select("boatName registrationNumber connectionStatus connectionCheckedAt")
+      .select("boatName registrationNumber boatType modelYear engineSerial engineType fuelCapacity horsepower boatStatus imageUrl latitude longitude createdAt connectionStatus connectionCheckedAt owner")
+      .populate("owner", "name email")
       .sort({ boatName: 1 });
     return res.status(200).json(boats);
   } catch (error) {
