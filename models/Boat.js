@@ -21,6 +21,12 @@ const boatSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    signalLocation: {
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null },
+      recordedAt: { type: Date, default: null },
+      status: { type: String, enum: ["good", "medium", "poor", "offline"], default: null },
+    },
     boatName: {
       type: String,
       required: true,
