@@ -3,15 +3,43 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
 } = require("@whiskeysockets/baileys");
+const fs = require("fs/promises");
+const path = require("path");
 const pino = require("pino");
 const qrcode = require("qrcode-terminal");
 
 let sock = null;
 let isConnected = false;
+let resettingLoggedOutSession = false;
+const authDirectory = path.join(__dirname, "..", "baileys_auth_info");
+
+const resetLoggedOutSession = async () => {
+  if (resettingLoggedOutSession) return;
+  resettingLoggedOutSession = true;
+  try {
+    const archiveDirectory = `${authDirectory}.logged-out-${Date.now()}`;
+    await fs.rename(authDirectory, archiveDirectory);
+    console.warn(`WhatsApp rejected the saved session; archived it as ${path.basename(archiveDirectory)}.`);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.error("Could not archive the logged-out WhatsApp session:", error.message);
+      resettingLoggedOutSession = false;
+      return;
+    }
+  }
+
+  try {
+    await connectToWhatsApp();
+  } catch (error) {
+    console.error("Could not start a new WhatsApp pairing session:", error.message);
+  } finally {
+    resettingLoggedOutSession = false;
+  }
+};
 
 async function connectToWhatsApp() {
   // Session එක save වන folder එක
-  const { state, saveCreds } = await useMultiFileAuthState("baileys_auth_info");
+  const { state, saveCreds } = await useMultiFileAuthState(authDirectory);
 
   sock = makeWASocket({
     logger: pino({ level: "silent" }),
@@ -42,6 +70,8 @@ async function connectToWhatsApp() {
 
       if (shouldReconnect) {
         connectToWhatsApp(); // නැවත Auto Connect වීම
+      } else {
+        resetLoggedOutSession();
       }
     } else if (connection === "open") {
       console.log("\n========================================");
