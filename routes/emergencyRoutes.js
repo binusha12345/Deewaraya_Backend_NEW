@@ -1,19 +1,32 @@
-// server/routes/emergencyRoutes.js
-router.get('/emergencies/count', adminAuth, async (req, res) => {
-  const count = await Emergency.countDocuments({ status: 'active' });
-  res.json({ count });
+const express = require("express");
+const router = express.Router();
+const { protect } = require("../middleware/authMiddleware");
+const {
+  sendSOS,
+  markSafe,
+  getEmergencyHistory,
+  getActiveEmergency,
+  getEmergencyContacts,
+} = require("../controllers/emergencyController");
+
+router.use(protect, (req, res, next) => {
+  if (req.user.role !== "driver") {
+    return res.status(403).json({ success: false, message: "Drivers only" });
+  }
+  next();
 });
 
-router.post('/emergency', authMiddleware, async (req, res) => {
-  const emergency = await Emergency.create({
-    boatId: req.body.boatId,
-    location: req.body.location,
-    type: req.body.type, // sinking, engine_failure, medical, etc.
-    status: 'active'
-  });
-  
-  // Notify admin
-  notifyAdmin(emergency);
-  
-  res.json({ success: true, emergency });
-});
+// SOS යැවීම
+router.get("/contacts", getEmergencyContacts);
+router.post("/sos", sendSOS);
+
+// I'm Safe button එක ඔබූ විට
+router.put("/safe/:id", markSafe);
+
+// Driver ගේ Emergency History එක
+router.get("/history", getEmergencyHistory);
+
+// දැනට active emergency එකක් තියෙනවද බලන්න
+router.get("/active", getActiveEmergency);
+
+module.exports = router;
