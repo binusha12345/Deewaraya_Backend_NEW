@@ -8,6 +8,8 @@ const {
   resetPassword, 
   uploadProfilePicture,   
   uploadCoverPhoto, 
+  updateUserProfile,
+  changeUserPassword,
 } = require("../controllers/authController");
 
 const { protect } = require("../middleware/authMiddleware");   
@@ -16,6 +18,8 @@ const upload = require("../middleware/upload");
 router.post("/register", registerUser);
 router.post("/login", loginUser);
 router.get("/check-name/:name", checkNameAvailability); 
+router.put("/profile", protect, updateUserProfile);
+router.put("/change-password", protect, changeUserPassword);
 
 // Forgot Password Routes
 router.post("/forgot-password", forgotPassword);
