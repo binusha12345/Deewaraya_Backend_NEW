@@ -3,8 +3,9 @@ const path = require("path");
 const fs = require("fs");
 
 // Create upload folders if not exist
-const profileDir = "uploads/profiles";
-const coverDir = "uploads/covers";
+const uploadRoot = path.join(__dirname, "..", "uploads");
+const profileDir = path.join(uploadRoot, "profiles");
+const coverDir = path.join(uploadRoot, "covers");
 
 if (!fs.existsSync(profileDir)) fs.mkdirSync(profileDir, { recursive: true });
 if (!fs.existsSync(coverDir)) fs.mkdirSync(coverDir, { recursive: true });
@@ -17,6 +18,8 @@ const storage = multer.diskStorage({
       cb(null, profileDir);
     } else if (file.fieldname === "coverPhoto") {
       cb(null, coverDir);
+    } else {
+      cb(new Error("Unsupported image upload field."));
     }
   },
   filename: (req, file, cb) => {
@@ -28,9 +31,9 @@ const storage = multer.diskStorage({
 
 // File filter - only images
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp/;
-  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = allowedTypes.test(file.mimetype);
+  const allowedExtensions = new Set([".jpeg", ".jpg", ".png", ".gif", ".webp"]);
+  const extname = allowedExtensions.has(path.extname(file.originalname).toLowerCase());
+  const mimetype = /^image\/(jpeg|png|gif|webp)$/.test(file.mimetype);
 
   if (extname && mimetype) {
     cb(null, true);
