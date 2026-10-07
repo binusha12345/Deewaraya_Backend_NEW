@@ -61,6 +61,197 @@ const uploadProfilePicture = async (req, res) => {
   }
 };
 
+const updateUserProfile = async (req, res) => {
+  try {
+    const { name, email, phone, nic, address } = req.body || {};
+    const cleanName = typeof name === "string" ? name.trim() : "";
+    const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+    const cleanPhone = typeof phone === "string" ? phone.trim() : "";
+    const cleanNic = typeof nic === "string" ? nic.trim() : "";
+    const cleanAddress = typeof address === "string" ? address.trim() : "";
+
+    if (!cleanName || !cleanEmail || !cleanPhone || !cleanNic || !cleanAddress) {
+      return res.status(400).json({
+        success: false,
+        message: "Please complete all profile fields.",
+      });
+    }
+
+    if (cleanName.length < 2 || cleanName.length > 50) {
+      return res.status(400).json({
+        success: false,
+        field: "name",
+        message: "Name must be between 2 and 50 characters.",
+      });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({
+        success: false,
+        field: "email",
+        message: "Please enter a valid email address.",
+      });
+    }
+
+    if (!/^[0-9]{10}$/.test(cleanPhone)) {
+      return res.status(400).json({
+        success: false,
+        field: "phone",
+        message: "Phone number must contain exactly 10 digits.",
+      });
+    }
+
+    if (!/^[0-9]{12}$/.test(cleanNic)) {
+      return res.status(400).json({
+        success: false,
+        field: "nic",
+        message: "NIC must contain exactly 12 digits.",
+      });
+    }
+
+    const userId = req.user._id;
+    const escapedName = cleanName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const [existingName, existingEmail, existingPhone, existingNic] = await Promise.all([
+      User.findOne({
+        _id: { $ne: userId },
+        name: { $regex: new RegExp(`^${escapedName}$`, "i") },
+      }),
+      User.findOne({ _id: { $ne: userId }, email: cleanEmail }),
+      User.findOne({ _id: { $ne: userId }, phone: cleanPhone }),
+      User.findOne({ _id: { $ne: userId }, nic: cleanNic }),
+    ]);
+
+    const duplicate = [
+      [existingName, "name", "This name is already registered."],
+      [existingEmail, "email", "This email is already registered."],
+      [existingPhone, "phone", "This phone number is already registered."],
+      [existingNic, "nic", "This NIC is already registered."],
+    ].find(([existing]) => existing);
+
+    if (duplicate) {
+      return res.status(409).json({
+        success: false,
+        field: duplicate[1],
+        message: duplicate[2],
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    user.name = cleanName;
+    user.email = cleanEmail;
+    user.phone = cleanPhone;
+    user.nic = cleanNic;
+    user.address = cleanAddress;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile updated successfully.",
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        nic: user.nic,
+        address: user.address,
+        role: user.role,
+        profilePicture: user.profilePicture,
+        coverPhoto: user.coverPhoto,
+        createdAt: user.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("Update profile error:", error);
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern || {})[0];
+      const labels = {
+        name: "This name is already registered.",
+        email: "This email is already registered.",
+        phone: "This phone number is already registered.",
+        nic: "This NIC is already registered.",
+      };
+      return res.status(409).json({
+        success: false,
+        field,
+        message: labels[field] || "Duplicate profile information.",
+      });
+    }
+    if (error.name === "ValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: Object.values(error.errors)[0]?.message || "Profile details are invalid.",
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      message: "Could not update profile. Please try again.",
+    });
+  }
+};
+
+const changeUserPassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+    if (
+      typeof currentPassword !== "string" ||
+      typeof newPassword !== "string" ||
+      typeof confirmPassword !== "string" ||
+      !currentPassword ||
+      !newPassword ||
+      !confirmPassword
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Complete all password fields.",
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        field: "newPassword",
+        message: "New password must be at least 8 characters.",
+      });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        field: "confirmPassword",
+        message: "New passwords do not match.",
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    const currentPasswordMatches = await bcrypt.compare(currentPassword, user.password);
+    if (!currentPasswordMatches) {
+      return res.status(400).json({
+        success: false,
+        field: "currentPassword",
+        message: "Current password is incorrect.",
+      });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    return res.status(200).json({ success: true, message: "Password updated successfully." });
+  } catch (error) {
+    console.error("Change password error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Could not update password. Please try again.",
+    });
+  }
+};
+
 
 // Upload Cover Photo
 const uploadCoverPhoto = async (req, res) => {
@@ -644,4 +835,6 @@ module.exports = {
   resetPassword,    
   uploadProfilePicture,   
   uploadCoverPhoto,  
+  updateUserProfile,
+  changeUserPassword,
 };
