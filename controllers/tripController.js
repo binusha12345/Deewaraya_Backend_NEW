@@ -66,6 +66,24 @@ const getMyTrips = async (req, res) => {
   }
 };
 
+const getOwnerTrips = async (req, res) => {
+  try {
+    const boatIds = await Boat.distinct("_id", { owner: req.user._id });
+    if (boatIds.length === 0) return res.status(200).json({ trips: [] });
+
+    const trips = await Trip.find({ boat: { $in: boatIds } })
+      .populate("boat", "boatName registrationNumber")
+      .populate("driver", "name email")
+      .sort({ startedAt: -1 })
+      .limit(100);
+
+    return res.status(200).json({ trips });
+  } catch (error) {
+    console.error("Get owner trips error:", error.message);
+    return res.status(500).json({ message: "Could not load boat trips" });
+  }
+};
+
 const startTrip = async (req, res) => {
   try {
     const { boatId, latitude, longitude, recordedAt } = req.body;
@@ -142,4 +160,4 @@ const endTrip = async (req, res) => {
   }
 };
 
-module.exports = { getMyTrips, startTrip, recordTripPoint, endTrip };
+module.exports = { getMyTrips, getOwnerTrips, startTrip, recordTripPoint, endTrip };
