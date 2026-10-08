@@ -68,16 +68,48 @@ const getMyTrips = async (req, res) => {
 
 const getOwnerTrips = async (req, res) => {
   try {
-    const boatIds = await Boat.distinct("_id", { owner: req.user._id });
-    if (boatIds.length === 0) return res.status(200).json({ trips: [] });
+    const { boatId } = req.query;
+    if (!boatId || !/^[a-f\d]{24}$/i.test(boatId)) {
+      return res.status(400).json({ message: "Select a valid boat" });
+    }
 
-    const trips = await Trip.find({ boat: { $in: boatIds } })
+    const boat = await Boat.findOne({ _id: boatId, owner: req.user._id }).select("_id");
+    if (!boat) return res.status(404).json({ message: "Boat not found in your fleet" });
+
+    const [trips, summaryResults] = await Promise.all([
+      Trip.find({ boat: boat._id })
+      .select("boat driver startedAt endedAt durationSeconds distanceKm")
       .populate("boat", "boatName registrationNumber")
       .populate("driver", "name email")
       .sort({ startedAt: -1 })
-      .limit(100);
+      .limit(100),
+      Trip.aggregate([
+        { $match: { boat: boat._id } },
+        {
+          $group: {
+            _id: "$boat",
+            tripCount: { $sum: 1 },
+            totalDistanceKm: { $sum: { $ifNull: ["$distanceKm", 0] } },
+            totalDurationSeconds: {
+              $sum: {
+                $ifNull: [
+                  "$durationSeconds",
+                  { $divide: [{ $subtract: [new Date(), "$startedAt"] }, 1000] },
+                ],
+              },
+            },
+          },
+        },
+      ]),
+    ]);
 
-    return res.status(200).json({ trips });
+    const summary = summaryResults[0] || {
+      tripCount: 0,
+      totalDistanceKm: 0,
+      totalDurationSeconds: 0,
+    };
+
+    return res.status(200).json({ trips, summary });
   } catch (error) {
     console.error("Get owner trips error:", error.message);
     return res.status(500).json({ message: "Could not load boat trips" });
