@@ -29,5 +29,6 @@ const tripSchema = new mongoose.Schema(
 );
 
 tripSchema.index({ driver: 1, endedAt: 1 });
+tripSchema.index({ boat: 1, startedAt: -1 });
 
 module.exports = mongoose.model("Trip", tripSchema);
