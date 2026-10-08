@@ -1,9 +1,16 @@
 const express = require("express");
 const { protect } = require("../middleware/authMiddleware");
-const { getMyTrips, startTrip, recordTripPoint, endTrip } = require("../controllers/tripController");
+const { getMyTrips, getOwnerTrips, startTrip, recordTripPoint, endTrip } = require("../controllers/tripController");
 
 const router = express.Router();
-router.use(protect, (req, res, next) => {
+router.use(protect);
+
+router.get("/owner", (req, res, next) => {
+  if (req.user.role !== "owner") return res.status(403).json({ message: "Owners only" });
+  next();
+}, getOwnerTrips);
+
+router.use((req, res, next) => {
   if (req.user.role !== "driver") return res.status(403).json({ message: "Drivers only" });
   next();
 });
