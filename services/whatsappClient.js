@@ -11,6 +11,8 @@ const qrcode = require("qrcode-terminal");
 let sock = null;
 let isConnected = false;
 let resettingLoggedOutSession = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
 const authDirectory = path.join(__dirname, "..", "baileys_auth_info");
 
 const resetLoggedOutSession = async () => {
@@ -50,6 +52,12 @@ async function connectToWhatsApp() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // Consume incoming messages to prevent session decryption errors from flooding logs
+  sock.ev.on("messages.upsert", () => {});
+  sock.ev.on("messaging.historySync", () => {});
+  sock.ev.on("presence.update", () => {});
+  sock.ev.on("message", () => {});
+
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -69,7 +77,18 @@ async function connectToWhatsApp() {
       isConnected = false;
 
       if (shouldReconnect) {
-        connectToWhatsApp(); // නැවත Auto Connect වීම
+        reconnectAttempts++;
+        if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+          const delay = Math.min(5000 * reconnectAttempts, 60000);
+          console.log(`🔄 Reconnecting WhatsApp in ${delay / 1000}s... (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+          setTimeout(() => connectToWhatsApp(), delay);
+        } else {
+          console.error(`❌ WhatsApp connection failed after ${MAX_RECONNECT_ATTEMPTS} attempts. Will retry in 5 minutes.`);
+          setTimeout(() => {
+            reconnectAttempts = 0;
+            connectToWhatsApp();
+          }, 5 * 60 * 1000);
+        }
       } else {
         resetLoggedOutSession();
       }
@@ -79,6 +98,7 @@ async function connectToWhatsApp() {
       console.log("🟢 දැන් PDF messages යැවීමට සූදානම්!");
       console.log("========================================\n");
       isConnected = true;
+      reconnectAttempts = 0;
     }
   });
 }
