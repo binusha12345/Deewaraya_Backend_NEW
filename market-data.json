@@ -44,5 +44,5 @@
       "unit": "kg"
     }
   ],
-  "fish_source": "System estimate (CFHC has no published price table)"
+  "fish_source": "System estimate (CFHC request failed)"
 }
