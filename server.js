@@ -171,6 +171,10 @@ app.use("/api/financial", financeRoutes);
 app.use("/api/translate", translateRoutes);
 app.use("/api/contact", require("./routes/contact"));
 
+// Add or update these lines in server.js / app.js BEFORE your routes:
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
 app.get("/", (req, res) => {
   res.send("Deewaraya API Running...");
 });
