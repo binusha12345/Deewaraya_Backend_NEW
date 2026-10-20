@@ -1,4 +1,4 @@
-const { sendWhatsAppText } = require("./whatsappService");
+const { sendWhatsAppText, sendWhatsAppAudio } = require("./whatsappService");
 
 const emergencyTypeLabels = {
   medical: "🆘 Medical Emergency",
@@ -23,10 +23,15 @@ const sendEmergencyAlert = async ({
   longitude,
   placeName,
   message,
+  voiceNoteBase64,
+  voiceNoteMimeType,
 }) => {
   const typeLabel = emergencyTypeLabels[emergencyType] || "⚠️ Emergency";
-  const coordinatesAvailable = latitude != null && longitude != null
-    && Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude));
+  const coordinatesAvailable =
+    latitude != null &&
+    longitude != null &&
+    Number.isFinite(Number(latitude)) &&
+    Number.isFinite(Number(longitude));
   const mapsLink = coordinatesAvailable
     ? `https://www.google.com/maps?q=${latitude},${longitude}`
     : null;
@@ -51,6 +56,10 @@ const sendEmergencyAlert = async ({
 
   if (message) msg += `\n📝 *Driver Note:* ${message}\n`;
 
+  if (voiceNoteBase64) {
+    msg += `\n🎤 *Voice note attached* — listen to the voice recording below.\n`;
+  }
+
   msg +=
     `\n━━━━━━━━━━━━━━━━━━━━\n` +
     `🚑 *Immediate Action Required:*\n` +
@@ -62,8 +71,23 @@ const sendEmergencyAlert = async ({
 
   msg += `\n_Dear ${ownerName}, this is an auto-emergency alert from Deewaraya System._`;
 
+  // 1. Send Text Alert First
   await sendWhatsAppText(ownerPhone, msg);
-  console.log("SOS WhatsApp alert sent to boat owner.");
+  console.log("SOS WhatsApp text alert sent to boat owner.");
+
+  // 2. Send Voice Recording Message Immediately After
+  if (voiceNoteBase64) {
+    try {
+      await sendWhatsAppAudio(
+        ownerPhone,
+        voiceNoteBase64,
+        voiceNoteMimeType || "audio/webm"
+      );
+      console.log("🎙️ SOS Voice note successfully delivered to WhatsApp.");
+    } catch (audioErr) {
+      console.error("❌ SOS WhatsApp voice note sending failed:", audioErr.message);
+    }
+  }
 };
 
 const sendSafeAlert = async ({ ownerPhone, driverName, boatName }) => {
