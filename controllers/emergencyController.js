@@ -8,9 +8,11 @@ exports.getEmergencyContacts = async (req, res) => {
     const boat = await Boat.findOne({ driver: req.user._id })
       .select("owner boatName registrationNumber")
       .populate("owner", "name phone");
+    
     if (!boat) {
       return res.status(404).json({ success: false, message: "No boat assigned to you." });
     }
+    
     return res.status(200).json({
       success: true,
       data: {
@@ -27,9 +29,17 @@ exports.getEmergencyContacts = async (req, res) => {
 // ========== SEND SOS ==========
 exports.sendSOS = async (req, res) => {
   try {
-    const { emergencyType, latitude, longitude, placeName, message, checklist } = req.body;
+    const { 
+      emergencyType, 
+      latitude, 
+      longitude, 
+      placeName, 
+      message, 
+      checklist,
+      voiceNoteBase64,   // Extracted here
+      voiceNoteMimeType  // Extracted here
+    } = req.body;
 
-    // Driver ගේ assigned boat එක සොයා ගැනීම
     const boat = await Boat.findOne({ driver: req.user._id }).populate("owner");
     if (!boat) {
       return res.status(404).json({ success: false, message: "No boat assigned to you." });
@@ -40,7 +50,6 @@ exports.sendSOS = async (req, res) => {
       return res.status(409).json({ success: false, message: "The assigned boat has no owner." });
     }
 
-    // Emergency Log එක Save කිරීම
     const emergency = await EmergencyLog.create({
       driverId: req.user._id,
       boatId: boat._id,
@@ -56,6 +65,7 @@ exports.sendSOS = async (req, res) => {
 
     const coordinatesAvailable = latitude != null && longitude != null
       && Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude));
+      
     const notification = await Notification.create({
       owner: owner._id,
       boat: boat._id,
@@ -64,11 +74,13 @@ exports.sendSOS = async (req, res) => {
       latitude: coordinatesAvailable ? Number(latitude) : null,
       longitude: coordinatesAvailable ? Number(longitude) : null,
     });
+    
     await notification.populate("boat", "boatName registrationNumber");
     req.app.get("io")?.to(`owner:${owner._id}`).emit("notification:new", notification);
 
     let whatsappSent = false;
     try {
+      // Pass the voice recording to your alert service
       await sendEmergencyAlert({
         ownerPhone: owner.phone,
         ownerName: owner.name,
@@ -80,6 +92,8 @@ exports.sendSOS = async (req, res) => {
         longitude,
         placeName,
         message,
+        voiceNoteBase64,
+        voiceNoteMimeType
       });
       whatsappSent = true;
     } catch (error) {
@@ -125,12 +139,14 @@ exports.markSafe = async (req, res) => {
     if (!owner) {
       return res.status(409).json({ success: false, message: "The boat owner could not be found." });
     }
+    
     const notification = await Notification.create({
       owner: owner._id,
       boat: emergency.boatId._id,
       type: "emergency_safe",
       message: `${req.user.name || "The assigned driver"} marked safe after an emergency on ${emergency.boatId.boatName}.`,
     });
+    
     await notification.populate("boat", "boatName registrationNumber");
     req.app.get("io")?.to(`owner:${owner._id}`).emit("notification:new", notification);
 
